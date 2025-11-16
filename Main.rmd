@@ -1750,3 +1750,1315 @@ print(df_wide)
 # Save to CSV if needed
 write.csv(df_wide, ##(Genus abundance CSV), row.names = FALSE)
 ```                                     
+
+```{r}
+## ── Phylum counts + “most abundant phyla (mean ± SE%)” sentence ─────────────
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tibble)
+library(glue)
+
+# 0) Helper
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+# 1) Start from your host-filtered object
+ps0 <- dat_lessHOST
+
+# 2) Collapse to Phylum and convert to relative abundance per sample
+ps_phy   <- tax_glom(ps0, taxrank = "Phylum", NArm = FALSE)
+ps_phy_r <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+
+# 3) Extract abundance matrix and taxonomy
+A <- as(otu_table(ps_phy_r), "matrix")
+if (!taxa_are_rows(ps_phy_r)) A <- t(A)
+TX <- as(tax_table(ps_phy_r), "matrix")[rownames(A), , drop = FALSE]
+
+df <- as_tibble(A, rownames = "ASV") |>
+  pivot_longer(-ASV, names_to = "SampleID", values_to = "RelAbund") |>
+  left_join(as_tibble(TX, rownames = "ASV") |> select(ASV, Phylum),
+            by = "ASV") |>
+  mutate(
+    Phylum = case_when(
+      is.na(Phylum) | Phylum %in% c("", "NA") ~ "Unclassified",
+      TRUE                                    ~ Phylum
+    )
+  )
+
+# 4) (Optional) Recode to legacy/common names used elsewhere in your doc
+recode_to_legacy <- TRUE
+if (recode_to_legacy) {
+  df <- df |>
+    mutate(Phylum = case_when(
+      Phylum == "Actinomycetota"  ~ "Actinomycetota (Actinobacteria)",
+      Phylum == "Bacillota"       ~ "Bacillota (Firmicutes)",
+      Phylum == "Bacteroidota"    ~ "Bacteroidota (Bacteroidetes)",
+      Phylum == "Pseudomonadota"  ~ "Pseudomonadota (Proteobacteria)",
+      TRUE                        ~ Phylum
+    ))
+}
+
+# 5) Summary stats by phylum (in percent)
+phylum_stats <- df |>
+  group_by(Phylum) |>
+  summarise(
+    n_samples = n_distinct(SampleID),
+    mean_pct  = mean(RelAbund, na.rm = TRUE) * 100,
+    se_pct    = se(RelAbund) * 100,
+    .groups   = "drop"
+  ) |>
+  arrange(desc(mean_pct))
+
+# 6) Totals
+n_phyla_incl_unc <- n_distinct(phylum_stats$Phylum)
+n_phyla_excl_unc <- phylum_stats |>
+  filter(!Phylum %in% c("Unclassified", "Unidentifiable")) |>
+  summarise(n = n_distinct(Phylum)) |>
+  pull(n)
+
+# 7) Pick top-k phyla for the sentence
+k <- 10
+top_tbl <- phylum_stats |>
+  filter(!Phylum %in% c("Unclassified", "Unidentifiable")) |>
+  slice_head(n = k)
+
+# 8) Build sentences
+fmt <- function(m, s) sprintf("%.1f \u00B1 %.1f", m, s)
+top_phrase <- paste0(
+  top_tbl$Phylum, " (", mapply(fmt, top_tbl$mean_pct, top_tbl$se_pct), "%)"
+) |> paste(collapse = ", ")
+
+cat(glue(
+  "Across all samples, there were {n_phyla_incl_unc} bacterial phyla ",
+  "(or {n_phyla_excl_unc} excluding 'Unclassified').\n"
+))
+
+cat(glue(
+  "The most abundant phyla identified were {top_phrase}.\n"
+))
+```
+
+```{r}
+## ── Top 5 phyla per site → prose sentences (mean ± SE %) ─────────────────────
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tibble)
+
+# Standard error helper
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+# Nice join: "A, B, C, and D"
+join_with_and <- function(x) {
+  x <- as.character(x)
+  n <- length(x)
+  if (n <= 1) return(paste0(x, collapse = ""))
+  paste0(paste0(x[1:(n-1)], collapse = ", "), ", and ", x[n])
+}
+
+# Start from your host-filtered phyloseq object
+ps0 <- dat_lessHOST
+
+# Collapse to Phylum, convert to per-sample relative abundance
+ps_phy   <- tax_glom(ps0, taxrank = "Phylum", NArm = FALSE)
+ps_phy_r <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+
+# Long format with Site/Phylum/RelAbund
+df <- psmelt(ps_phy_r) %>%
+  mutate(
+    Phylum = ifelse(is.na(Phylum) | Phylum %in% c("", "NA"),
+                    "Unclassified", Phylum)
+  ) %>%
+  select(Site, Sample, Phylum, RelAbund = Abundance)
+
+# (Optional) Recode to legacy/common names used elsewhere
+recode_to_legacy <- TRUE
+if (recode_to_legacy) {
+  df <- df %>%
+    mutate(Phylum = case_when(
+      Phylum == "Actinomycetota" ~ "Actinomycetota (Actinobacteria)",
+      Phylum == "Bacillota"      ~ "Bacillota (Firmicutes)",
+      Phylum == "Bacteroidota"   ~ "Bacteroidota (Bacteroidetes)",
+      Phylum == "Pseudomonadota" ~ "Pseudomonadota (Proteobacteria)",
+      TRUE                       ~ Phylum
+    ))
+}
+
+# Per-site × phylum mean ± SE (%)
+site_phylum_stats <- df %>%
+  group_by(Site, Phylum) %>%
+  summarise(
+    n_samples = n_distinct(Sample),
+    mean_pct  = mean(RelAbund, na.rm = TRUE) * 100,
+    se_pct    = se(RelAbund) * 100,
+    .groups   = "drop"
+  )
+
+# Keep the top 5 phyla per site (by mean %)
+top5_by_site <- site_phylum_stats %>%
+  group_by(Site) %>%
+  slice_max(order_by = mean_pct, n = 5, with_ties = FALSE) %>%
+  arrange(Site, desc(mean_pct)) %>%
+  ungroup() %>%
+  # round for clean prose
+  mutate(
+    mean_pct = round(mean_pct, 2),   # keep 2 dp internally…
+    se_pct   = round(se_pct,   2),
+    # …but print as 1 dp in the phrase
+    phrase   = sprintf("%s (%.1f \u00B1 %.1f%%)", Phylum, mean_pct, se_pct)
+  )
+
+# Build one sentence per site
+sentences <- top5_by_site %>%
+  group_by(Site) %>%
+  summarise(
+    sentence = {
+      first_item <- phrase[1]
+      rest_items <- phrase[-1]
+      paste0(
+        "At ", unique(Site), ", the dominant phylum was ",
+        first_item,
+        if (length(rest_items) > 0)
+          paste0(" followed by ", join_with_and(rest_items))
+        else "",
+        "."
+      )
+    },
+    .groups = "drop"
+  )
+
+# Print each site’s sentence on its own line (or use "\n\n" for blank lines)
+cat(paste(sentences$sentence, collapse = "\n\n"))
+```
+
+```{r}
+## ── PERMANOVA at the Phylum level ────────────────────────────────────────────
+library(phyloseq)
+library(vegan)
+library(dplyr)
+
+# 0) Choose your phyloseq object
+ps <- dat_lessHOST   # or dat_r, etc.
+
+# 1) Agglomerate to Phylum
+ps_phy <- tax_glom(ps, taxrank = "Phylum", NArm = FALSE)
+
+# 2) Make per-sample relative abundance (so library size doesn't dominate)
+ps_phy_rel <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+
+# 3) Community matrix (samples x phyla) + metadata
+X <- as(otu_table(ps_phy_rel), "matrix")
+if (taxa_are_rows(ps_phy_rel)) X <- t(X)
+meta <- as(sample_data(ps_phy_rel), "data.frame")
+
+# 4) Align rows; drop all-zero samples
+common <- intersect(rownames(X), rownames(meta))
+X   <- X[common, , drop = FALSE]
+meta <- meta[common, , drop = FALSE]
+keep <- rowSums(X) > 0
+X    <- X[keep, , drop = FALSE]
+meta <- meta[keep, , drop = FALSE]
+
+# 5) Grouping factor
+stopifnot("Site" %in% names(meta))
+meta$Site <- droplevels(factor(meta$Site))
+
+# If any Site has <2 samples, drop it for pairwise testing
+bad <- names(which(table(meta$Site) < 2))
+if (length(bad)) {
+  message("Dropping groups with <2 samples: ", paste(bad, collapse = ", "))
+  keep2 <- !(meta$Site %in% bad)
+  X    <- X[keep2, , drop = FALSE]
+  meta <- meta[keep2, , drop = FALSE]
+  meta$Site <- droplevels(meta$Site)
+}
+
+# (Optional) decide what to do with Unclassified phyla:
+# If you want to keep them (recommended for honesty), do nothing.
+# If you want to drop them from the matrix:
+# phyla <- colnames(X)
+# to_drop <- grepl("Unclassified|Unassigned|NA", phyla, ignore.case = TRUE)
+# X <- X[, !to_drop, drop = FALSE]
+
+# 6) Distance and global PERMANOVA
+set.seed(42)
+perm_n <- 999
+bc_phy <- vegdist(X, method = "bray")
+
+a2_phy <- adonis2(bc_phy ~ Site, data = meta, permutations = perm_n, by = "terms")
+print(a2_phy)
+# → Report pseudo-F, R2, p, permutations from this table.
+
+# 7) Pairwise PERMANOVA at Phylum level (PRIMER-style comparisons)
+# Install the helper once if needed:
+# install.packages("remotes")
+# remotes::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+
+library(pairwiseAdonis)
+
+# Use the distance object + formula (most robust)
+set.seed(42)
+pw_phy <- pairwise.adonis2(bc_phy ~ Site, data = meta, permutations = perm_n)
+print(pw_phy)
+
+# start from phylum-level relative abundance object
+ps_phy <- tax_glom(dat_lessHOST, taxrank = "Phylum", NArm = FALSE)
+ps_phy_rel <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+
+df <- psmelt(ps_phy_rel) %>%
+  select(Site, Sample, Phylum, Abundance) %>%
+  mutate(
+    Group = ifelse(Site %in% c("BWTP", "BRL", "DWTP", "WBS"),
+                   "Waste", "Rural")
+  )
+
+# summarise mean ± SE per Group × Phylum
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+phylum_summary <- df %>%
+  group_by(Group, Phylum) %>%
+  summarise(
+    mean_pct = mean(Abundance, na.rm = TRUE) * 100,
+    se_pct   = se(Abundance) * 100,
+    .groups  = "drop"
+  ) %>%
+  arrange(Group, desc(mean_pct))
+
+phylum_summary
+```
+
+```{r}
+## ── PERMANOVA: Rural vs Waste at Phylum level ────────────────────────────────
+library(phyloseq)
+library(vegan)
+library(dplyr)
+
+# 1) Agglomerate to Phylum
+ps_phy <- tax_glom(dat_lessHOST, taxrank = "Phylum", NArm = FALSE)
+
+# 2) Relative abundance per sample
+ps_phy_rel <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+
+# 3) Extract data
+X <- as(otu_table(ps_phy_rel), "matrix")
+if (taxa_are_rows(ps_phy_rel)) X <- t(X)
+meta <- as(sample_data(ps_phy_rel), "data.frame")
+
+# 4) Define grouping: Rural vs Waste
+meta$Group <- ifelse(meta$Site %in% c("MF","MD"), "Rural", "Waste")
+meta$Group <- factor(meta$Group)
+
+# 5) Align sample names
+common <- intersect(rownames(X), rownames(meta))
+X   <- X[common, , drop = FALSE]
+meta <- meta[common, , drop = FALSE]
+
+# 6) Drop all-zero samples
+keep <- rowSums(X) > 0
+X    <- X[keep, , drop = FALSE]
+meta <- meta[keep, , drop = FALSE]
+
+# 7) Distance
+bc_phy <- vegdist(X, method = "bray")
+
+# 8) Global PERMANOVA
+set.seed(42)
+perm_n <- 999
+adonis_group <- adonis2(bc_phy ~ Group, data = meta,
+                        permutations = perm_n, by = "terms")
+print(adonis_group)
+
+# 9) Dispersion check (PERMDISP) to ensure differences aren’t due to heterogeneity
+bd <- betadisper(bc_phy, meta$Group)
+anova(bd)        # ANOVA test on dispersion
+permutest(bd)    # permutation test
+
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(phyloseq)
+  library(dplyr)
+  library(stringr)
+})
+
+# 1) Collapse to Genus
+ps_genus <- tax_glom(dat, taxrank = "Genus")
+
+# 2) Per-sample relative abundance (%)
+df_genus <- psmelt(ps_genus) %>%
+  group_by(Sample) %>%
+  mutate(relAbund = 100 * Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 3) Summarize across samples (mean ± SE) at Genus
+genus_summary <- df_genus %>%
+  group_by(Genus) %>%
+  summarise(
+    mean_relAbund = mean(relAbund, na.rm = TRUE),
+    se_relAbund   = sd(relAbund, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+# 4) Exclude unclassified/uncultured/unassigned and NA genus labels
+is_bad <- function(x) {
+  ifelse(is.na(x), TRUE, str_detect(x, regex("unclassified|uncultured|unassigned|na", ignore_case = TRUE)))
+}
+genus_clean <- genus_summary %>% filter(!is_bad(Genus))
+
+# 5) Count total genera and pick Top 10
+n_genera <- nrow(genus_clean)
+top_n <- 10
+top_genera <- genus_clean %>%
+  arrange(desc(mean_relAbund)) %>%
+  slice_head(n = min(top_n, n_genera)) %>%
+  mutate(
+    mean_txt = sprintf("%.1f", mean_relAbund),
+    se_txt   = sprintf("%.1f", se_relAbund),
+    piece    = paste0(Genus, " (", mean_txt, " \u00B1 ", se_txt, "%)")
+  )
+
+# 6) Build the narrative sentence
+sentence <- paste0(
+  "Across all fecal samples, there were ", n_genera, " bacterial genera. ",
+  "The most abundant genera identified were ",
+  paste(top_genera$piece, collapse = ", "),
+  "."
+)
+
+cat(sentence, "\n")
+```
+
+```{r}
+## ── PERMANOVA at the Genus level ───────────────────────────────────────────────
+library(phyloseq)
+library(vegan)
+library(dplyr)
+
+# 0) Choose your phyloseq object
+ps <- dat_lessHOST   # or dat_r, etc.
+
+# 1) Agglomerate to Genus
+ps_gen <- tax_glom(ps, taxrank = "Genus", NArm = FALSE)
+
+# 2) Make per-sample relative abundance (so library size doesn't dominate)
+ps_gen_rel <- transform_sample_counts(ps_gen, function(x) x / sum(x))
+
+# 3) Community matrix (samples x genera) + metadata
+X <- as(otu_table(ps_gen_rel), "matrix")
+if (taxa_are_rows(ps_gen_rel)) X <- t(X)
+meta <- as(sample_data(ps_gen_rel), "data.frame")
+
+# 4) Align rows; drop all-zero samples
+common <- intersect(rownames(X), rownames(meta))
+X    <- X[common, , drop = FALSE]
+meta <- meta[common, , drop = FALSE]
+keep <- rowSums(X) > 0
+X    <- X[keep, , drop = FALSE]
+meta <- meta[keep, , drop = FALSE]
+
+# 5) Grouping factor
+stopifnot("Site" %in% names(meta))
+meta$Site <- droplevels(factor(meta$Site))
+
+# If any Site has <2 samples, drop it for pairwise testing
+bad <- names(which(table(meta$Site) < 2))
+if (length(bad)) {
+  message("Dropping groups with <2 samples: ", paste(bad, collapse = ", "))
+  keep2 <- !(meta$Site %in% bad)
+  X    <- X[keep2, , drop = FALSE]
+  meta <- meta[keep2, , drop = FALSE]
+  meta$Site <- droplevels(meta$Site)
+}
+
+# (Optional) decide what to do with Unclassified genera:
+# If you want to keep them (recommended for transparency), do nothing.
+# If you want to drop them from the matrix:
+# genera <- colnames(X)
+# to_drop <- grepl("Unclassified|Unassigned|NA|uncultured", genera, ignore.case = TRUE)
+# X <- X[, !to_drop, drop = FALSE]
+
+# 6) Distance and global PERMANOVA
+set.seed(42)
+perm_n <- 999
+bc_gen <- vegdist(X, method = "bray")
+
+a2_gen <- adonis2(bc_gen ~ Site, data = meta, permutations = perm_n, by = "terms")
+print(a2_gen)
+# → Report pseudo-F, R2, p, permutations from this table.
+
+# 7) Pairwise PERMANOVA at Genus level (PRIMER-style comparisons)
+# Install the helper once if needed:
+# install.packages("remotes")
+# remotes::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+
+library(pairwiseAdonis)
+
+# Use the distance object + formula (robust to factor coding)
+set.seed(42)
+pw_gen <- pairwise.adonis2(bc_gen ~ Site, data = meta, permutations = perm_n)
+print(pw_gen)
+
+```
+
+```{r}
+## ── Top 10 genera per site → prose sentences (mean ± SE %) ────────────────────
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tibble)
+
+# ---- Helpers -----------------------------------------------------------------
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+join_with_and <- function(x) {
+  x <- as.character(x); n <- length(x)
+  if (n <= 1) return(paste0(x, collapse = ""))
+  paste0(paste0(x[1:(n-1)], collapse = ", "), ", and ", x[n])
+}
+
+# ---- Settings ----------------------------------------------------------------
+ps0 <- dat_lessHOST            # your host-filtered phyloseq object
+group_var <- "Site"            # grouping column in sample_data
+top_n <- 10                    # number of genera to report per site
+exclude_unclassified <- TRUE   # drop "unclassified/uncultured/unassigned" genera
+include_parent_phylum <- TRUE  # append parent phylum to each genus in prose
+italicize <- TRUE              # italicize Genus (and Phylum, if appended)
+
+# ---- Collapse to Genus and compute per-sample relative abundance --------------
+ps_gen   <- tax_glom(ps0, taxrank = "Genus", NArm = FALSE)
+ps_gen_r <- transform_sample_counts(ps_gen, function(x) x / sum(x))
+
+# Long format with Site / Sample / Genus / Phylum / RelAbund
+df <- psmelt(ps_gen_r) %>%
+  mutate(
+    Genus  = ifelse(is.na(Genus)  | Genus  %in% c("", "NA"), "Unclassified", Genus),
+    Phylum = ifelse(is.na(Phylum) | Phylum %in% c("", "NA"), "Unclassified", Phylum)
+  ) %>%
+  select(!!sym(group_var), Sample, Genus, Phylum, RelAbund = Abundance)
+
+# Optional: drop unclassified/uncultured labels (genus only)
+if (exclude_unclassified) {
+  df <- df %>%
+    filter(!str_detect(Genus, regex("unclassified|uncultured|unassigned|^NA$", ignore_case = TRUE)))
+}
+
+# Optional: recode phylum names to include legacy/common equivalents
+if (include_parent_phylum) {
+  df <- df %>%
+    mutate(Phylum = case_when(
+      Phylum == "Actinomycetota" ~ "Actinomycetota (Actinobacteria)",
+      Phylum == "Bacillota"      ~ "Bacillota (Firmicutes)",
+      Phylum == "Bacteroidota"   ~ "Bacteroidota (Bacteroidetes)",
+      Phylum == "Pseudomonadota" ~ "Pseudomonadota (Proteobacteria)",
+      TRUE                       ~ Phylum
+    ))
+}
+
+# ---- Per-site × genus mean ± SE (%) ------------------------------------------
+site_genus_stats <- df %>%
+  group_by(.data[[group_var]], Genus, Phylum) %>%
+  summarise(
+    n_samples = n_distinct(Sample),
+    mean_pct  = mean(RelAbund, na.rm = TRUE) * 100,
+    se_pct    = se(RelAbund) * 100,
+    .groups   = "drop"
+  )
+
+# Keep the top N genera per site (by mean %)
+topN_by_site <- site_genus_stats %>%
+  group_by(.data[[group_var]]) %>%
+  slice_max(order_by = mean_pct, n = top_n, with_ties = FALSE) %>%
+  arrange(.data[[group_var]], desc(mean_pct)) %>%
+  ungroup()
+
+# Format phrases (mean ± SE %) and optional italics/parent phylum
+fmt_name <- function(x, do_it = italicize) if (do_it) paste0("*", x, "*") else x
+
+topN_by_site <- topN_by_site %>%
+  mutate(
+    mean_pct_r = round(mean_pct, 1),
+    se_pct_r   = round(se_pct,   1),
+    genus_fmt  = fmt_name(Genus, italicize),
+    phylum_fmt = if (include_parent_phylum) fmt_name(Phylum, italicize) else NA_character_,
+    phrase     = if (include_parent_phylum)
+                   sprintf("%s (%.1f \u00B1 %.1f%%; %s)", genus_fmt, mean_pct_r, se_pct_r, phylum_fmt)
+                 else
+                   sprintf("%s (%.1f \u00B1 %.1f%%)",      genus_fmt, mean_pct_r, se_pct_r)
+  )
+
+# ---- Build one sentence per site ---------------------------------------------
+sentences <- topN_by_site %>%
+  group_by(.data[[group_var]]) %>%
+  summarise(
+    sentence = {
+      first_item <- phrase[1]
+      rest_items <- phrase[-1]
+      paste0(
+        "At ", unique(.data[[group_var]]),
+        ", the dominant genera were ",
+        first_item,
+        if (length(rest_items) > 0) paste0(" followed by ", join_with_and(rest_items)) else "",
+        "."
+      )
+    },
+    .groups = "drop"
+  )
+
+# ---- Print sentences ----------------------------------------------------------
+cat(paste(sentences$sentence, collapse = "\n\n"), "\n")
+```
+
+```{r}
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+
+# start from phylum-level relative abundance object
+ps_phy <- tax_glom(dat_lessHOST, taxrank = "Genus", NArm = FALSE)
+ps_phy_rel <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+
+df <- psmelt(ps_phy_rel) %>%
+  select(Site, Sample, Genus, Abundance) %>%
+  mutate(
+    Group = ifelse(Site %in% c("BWTP", "BRL", "DWTP", "WBS"),
+                   "Waste", "Rural")
+  )
+
+# summarise mean ± SE per Group × Phylum
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+genus_summary <- df %>%
+  group_by(Group, Genus) %>%
+  summarise(
+    mean_pct = mean(Abundance, na.rm = TRUE) * 100,
+    se_pct   = se(Abundance) * 100,
+    .groups  = "drop"
+  ) %>%
+  arrange(Group, desc(mean_pct))
+
+genus_summary
+```
+
+```{r}
+## ── PERMANOVA: Rural vs Waste at Genus level ────────────────────────────────
+library(phyloseq)
+library(vegan)
+library(dplyr)
+
+# 1) Agglomerate to Phylum
+ps_phy <- tax_glom(dat_lessHOST, taxrank = "Genus", NArm = FALSE)
+
+# 2) Relative abundance per sample
+ps_phy_rel <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+
+# 3) Extract data
+X <- as(otu_table(ps_phy_rel), "matrix")
+if (taxa_are_rows(ps_phy_rel)) X <- t(X)
+meta <- as(sample_data(ps_phy_rel), "data.frame")
+
+# 4) Define grouping: Rural vs Waste
+meta$Group <- ifelse(meta$Site %in% c("MF","MD"), "Rural", "Waste")
+meta$Group <- factor(meta$Group)
+
+# 5) Align sample names
+common <- intersect(rownames(X), rownames(meta))
+X   <- X[common, , drop = FALSE]
+meta <- meta[common, , drop = FALSE]
+
+# 6) Drop all-zero samples
+keep <- rowSums(X) > 0
+X    <- X[keep, , drop = FALSE]
+meta <- meta[keep, , drop = FALSE]
+
+# 7) Distance
+bc_phy <- vegdist(X, method = "bray")
+
+# 8) Global PERMANOVA
+set.seed(42)
+perm_n <- 999
+adonis_group <- adonis2(bc_phy ~ Group, data = meta,
+                        permutations = perm_n, by = "terms")
+print(adonis_group)
+
+# 9) Dispersion check (PERMDISP) to ensure differences aren’t due to heterogeneity
+bd <- betadisper(bc_phy, meta$Group)
+anova(bd)        # ANOVA test on dispersion
+permutest(bd)    # permutation test
+```
+
+```{r}
+## ── Alpha diversity (Shannon & Simpson) per site + ANOVA ─────────────────────
+library(phyloseq)
+library(vegan)
+library(dplyr)
+library(tibble)
+
+# 1) Choose your phyloseq object
+ps <- dat_lessHOST   # replace with your object
+
+# 2) Compute alpha diversity per sample
+alpha_df <- data.frame(
+  SampleID = sample_names(ps),
+  Site     = as.factor(sample_data(ps)$Site),
+  Shannon  = diversity(t(otu_table(ps)), index = "shannon"),
+  Simpson  = diversity(t(otu_table(ps)), index = "simpson")
+)
+
+# 3) Site-level summary (mean ± SE)
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+alpha_summary <- alpha_df %>%
+  group_by(Site) %>%
+  summarise(
+    n_samples = n(),
+    Shannon_mean  = mean(Shannon, na.rm = TRUE),
+    Shannon_se    = se(Shannon),
+    Simpson_mean  = mean(Simpson, na.rm = TRUE),
+    Simpson_se    = se(Simpson),
+    .groups = "drop"
+  )
+
+# 4) One-way ANOVAs
+anova_shannon <- aov(Shannon ~ Site, data = alpha_df)
+anova_simpson <- aov(Simpson ~ Site, data = alpha_df)
+
+# Print results
+cat("\n=== Site-level diversity summary (mean ± SE) ===\n")
+print(alpha_summary)
+
+cat("\n=== ANOVA: Shannon diversity ~ Site ===\n")
+print(summary(anova_shannon))
+
+cat("\n=== ANOVA: Simpson diversity ~ Site ===\n")
+print(summary(anova_simpson))
+```
+
+```{r}
+## ── Alpha diversity (Shannon & Simpson) grouped by Rural vs Waste ─────────────
+library(dplyr)
+
+# starting point: alpha_df from before
+# alpha_df has SampleID, Site, Shannon, Simpson
+
+# 1) Add a "Group" column (Rural vs Waste)
+# adjust mapping of Sites → Group as appropriate for your dataset
+alpha_df <- alpha_df %>%
+  mutate(Group = case_when(
+    Site %in% c("MD", "WBS") ~ "Rural",     # reference sites
+    Site %in% c("BWTP", "DWTP", "MF", "BRL") ~ "Waste",   # waste-influenced sites
+    TRUE ~ NA_character_
+  ))
+
+alpha_df$Group <- factor(alpha_df$Group, levels = c("Rural", "Waste"))
+
+# 2) Summarise mean ± SE by Group
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+alpha_summary_group <- alpha_df %>%
+  group_by(Group) %>%
+  summarise(
+    n_samples = n(),
+    Shannon_mean  = mean(Shannon, na.rm = TRUE),
+    Shannon_se    = se(Shannon),
+    Simpson_mean  = mean(Simpson, na.rm = TRUE),
+    Simpson_se    = se(Simpson),
+    .groups = "drop"
+  )
+
+cat("\n=== Group-level summary (mean ± SE) ===\n")
+print(alpha_summary_group)
+
+# 3) One-way ANOVAs
+anova_shannon_group <- aov(Shannon ~ Group, data = alpha_df)
+anova_simpson_group <- aov(Simpson ~ Group, data = alpha_df)
+
+cat("\n=== ANOVA: Shannon diversity ~ Group ===\n")
+print(summary(anova_shannon_group))
+
+cat("\n=== ANOVA: Simpson diversity ~ Group ===\n")
+print(summary(anova_simpson_group))
+
+# 4) Welch's t-tests (preferred for 2-group comparisons, no equal variance assumption)
+t_shannon <- t.test(Shannon ~ Group, data = alpha_df, var.equal = FALSE)
+t_simpson <- t.test(Simpson ~ Group, data = alpha_df, var.equal = FALSE)
+
+cat("\n=== Welch's t-test: Shannon diversity (Rural vs Waste) ===\n")
+print(t_shannon)
+
+cat("\n=== Welch's t-test: Simpson diversity (Rural vs Waste) ===\n")
+print(t_simpson)
+```
+
+```{r}
+## ── Morphometrics: mean ± SEM per Site + Rural vs Waste + tests ─────────────
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(stringr); library(tibble)
+})
+
+# Helper: SEM
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+# 0) Ensure key morphometric columns are numeric (you already did these above)
+#    Also catch "Hatching Success" if present (sanitized earlier -> Hatching.Success)
+num_candidates <- c("Weight.mg","Wing.Chord.mm","Right.Tarsus.mm","X9th.Primary.mm",
+                    "Clutch.Size","Box.Temperature","Hatching.Success")
+for (cn in intersect(num_candidates, names(map_df))) {
+  map_df[[cn]] <- suppressWarnings(as.numeric(map_df[[cn]]))
+}
+
+# 1) Define Rural vs Waste groups (Rural = MF, MD)
+grp_df <- map_df %>%
+  mutate(Group = case_when(
+    Site %in% c("MF","MD") ~ "Rural",
+    Site %in% c("BWTP","DWTP","BRL","WBS") ~ "Waste",
+    TRUE ~ NA_character_
+  ))
+
+# 2) Auto-detect morphometric columns:
+#    take all numeric columns except obvious IDs/factors
+id_like <- c("NAME","Site","Group","SampleID","Sample","Nest","NestID","ID")
+morpho_cols <- names(grp_df)[sapply(grp_df, is.numeric)]
+morpho_cols <- setdiff(morpho_cols, id_like)
+
+cat("Detected morphometric variables:\n")
+print(morpho_cols)
+
+# 3) Per-Site summary (mean ± SEM)
+morpho_site <- grp_df %>%
+  group_by(Site) %>%
+  summarise(across(all_of(morpho_cols),
+                   list(mean = ~mean(.x, na.rm = TRUE),
+                        se   = ~se(.x)),
+                   .names = "{.col}__{.fn}"),
+            .groups = "drop") %>%
+  pivot_longer(-Site, names_to = "var_stat", values_to = "value") %>%
+  separate(var_stat, into = c("variable","stat"), sep = "__") %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  mutate(`mean ± SEM` = sprintf("%.2f ± %.2f", mean, se)) %>%
+  arrange(Site, variable)
+
+cat("\n=== Morphometrics per Site (mean ± SEM) ===\n")
+print(morpho_site %>% select(Site, variable, `mean ± SEM`))
+
+# 4) Rural vs Waste summary (mean ± SEM)
+morpho_group <- grp_df %>%
+  filter(!is.na(Group)) %>%
+  group_by(Group) %>%
+  summarise(across(all_of(morpho_cols),
+                   list(mean = ~mean(.x, na.rm = TRUE),
+                        se   = ~se(.x)),
+                   .names = "{.col}__{.fn}"),
+            .groups = "drop") %>%
+  pivot_longer(-Group, names_to = "var_stat", values_to = "value") %>%
+  separate(var_stat, into = c("variable","stat"), sep = "__") %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  mutate(`mean ± SEM` = sprintf("%.2f ± %.2f", mean, se)) %>%
+  arrange(Group, variable)
+
+cat("\n=== Morphometrics by Group (Rural vs Waste; mean ± SEM) ===\n")
+print(morpho_group %>% select(Group, variable, `mean ± SEM`))
+
+# 5) Stats: Welch t-tests + ANOVA for each morphometric (Rural vs Waste)
+vars_to_test <- morpho_cols
+ttest_tbl <- lapply(vars_to_test, function(v){
+  dsub <- grp_df %>% select(Group, Site, all_of(v)) %>% filter(!is.na(Group))
+  # need at least 1 non-NA in each group
+  ok <- dsub %>% group_by(Group) %>% summarise(n_nonNA = sum(!is.na(.data[[v]])), .groups="drop")
+  if (nrow(ok) < 2 || any(ok$n_nonNA == 0)) return(NULL)
+
+  # Welch t-test (no equal-variance assumption)
+  tt <- try(t.test(reformulate("Group", response = v), data = dsub, var.equal = FALSE),
+            silent = TRUE)
+  if (inherits(tt, "try-error")) return(NULL)
+
+  # One-way ANOVA (equivalent with two groups; included for completeness)
+  av <- try(summary(aov(reformulate("Group", response = v), data = dsub))[[1]],
+            silent = TRUE)
+
+  tibble(
+    variable   = v,
+    t          = unname(tt$statistic),
+    df_t       = unname(tt$parameter),
+    p_t        = unname(tt$p.value),
+    mean_Rural = mean(dsub[[v]][dsub$Group=="Rural"], na.rm = TRUE),
+    mean_Waste = mean(dsub[[v]][dsub$Group=="Waste"], na.rm = TRUE),
+    F_anova    = if (!inherits(av, "try-error")) unname(av$`F value`[1]) else NA_real_,
+    p_anova    = if (!inherits(av, "try-error")) unname(av$`Pr(>F)`[1]) else NA_real_
+  )
+})
+ttest_tbl <- bind_rows(ttest_tbl)
+
+if (nrow(ttest_tbl)) {
+  cat("\n=== Rural vs Waste tests (per morphometric) ===\n")
+  print(ttest_tbl %>%
+          mutate(across(c(t, df_t, p_t, mean_Rural, mean_Waste, F_anova, p_anova),
+                        ~round(.x, 4))))
+} else {
+  cat("\n(No variables had sufficient data for group-wise testing.)\n")
+}
+```
+
+```{r}
+## ── Morphometric summary with Clutch, Hatching, Fledging, BCI ─
+suppressPackageStartupMessages(library(dplyr))
+
+# Helper functions
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+summarize_trait <- function(x, digits_mean = 1, digits_se = 1, digits_range = 1) {
+  x <- suppressWarnings(as.numeric(x))
+  m  <- mean(x, na.rm = TRUE)
+  s  <- se(x)
+  lo <- min(x, na.rm = TRUE)
+  hi <- max(x, na.rm = TRUE)
+  sprintf("%0.*f ± %0.*f (range %0.*f–%0.*f)",
+          digits_mean, m, digits_se, s, digits_range, lo, digits_range, hi)
+}
+
+# Ensure numeric columns are clean
+map_df$Weight.mg        <- as.numeric(map_df$Weight.mg)
+map_df$Wing.Chord.mm    <- as.numeric(map_df$Wing.Chord.mm)
+map_df$Right.Tarsus.mm  <- as.numeric(map_df$Right.Tarsus.mm)
+map_df$X9th.Primary.mm  <- as.numeric(map_df$X9th.Primary.mm)
+map_df$Clutch.Size      <- as.numeric(map_df$Clutch.Size)
+map_df$Hatching.Success <- as.numeric(map_df$Hatching.Success)
+map_df$Fledging.Success <- as.numeric(map_df$Fledging.Success)
+map_df$Box.Temperature  <- as.numeric(map_df$Box.Temperature)
+
+# === Compute BCI (residual mass ~ wing chord) ===
+bci_lm <- lm(Weight.mg ~ Wing.Chord.mm, data = map_df, na.action = na.exclude)
+map_df$BCI <- resid(bci_lm)
+
+# === Summaries ===
+mass     <- summarize_trait(map_df$Weight.mg)
+wing     <- summarize_trait(map_df$Wing.Chord.mm)
+p9       <- summarize_trait(map_df$X9th.Primary.mm)
+tarsus   <- summarize_trait(map_df$Right.Tarsus.mm)
+clutch   <- summarize_trait(map_df$Clutch.Size, digits_range = 0)
+hatch    <- summarize_trait(map_df$Hatching.Success)
+fledge   <- summarize_trait(map_df$Fledging.Success)
+bci      <- summarize_trait(map_df$BCI, digits_mean = 2, digits_se = 2, digits_range = 2)
+boxtemp  <- summarize_trait(map_df$Box.Temperature)
+
+# === Build manuscript-ready sentence ===
+sentence <- paste0(
+  "The average body mass of 10-day old tree swallow nestlings was ",
+  mass, " g. ",
+  "Averages for other morphometrics measured included wing chord length (", wing, " mm), ",
+  "9th primary length (", p9, " mm), and right tarsus length (", tarsus, " mm). ",
+  "The average clutch size was ", clutch, " eggs, ",
+  "with hatching success averaging ", hatch, "% and fledging success averaging ", fledge, "%. ",
+  "Residual body-condition index (BCI) was ", bci, ". ",
+  "The mean nest box temperature was ", boxtemp, " °C."
+)
+
+cat(sentence, "\n")
+```
+
+```{r}
+## ── One-way ANOVA by Site + Tukey pairwise for ALL morphometrics (fixed) ────
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(multcomp)      # glht(), mcp()
+  library(multcompView)  # cld()
+})
+
+hdr <- function(x) cat("\n", strrep("=", nchar(x)), "\n", x, "\n", strrep("=", nchar(x)), "\n", sep="")
+
+# 0) Make sure key columns are numeric if present
+num_candidates <- c("Weight.mg","Wing.Chord.mm","Right.Tarsus.mm","X9th.Primary.mm",
+                    "Clutch.Size","Box.Temperature","Hatching.Success",
+                    "Fledging.Success","BCI")
+for (cn in intersect(num_candidates, names(map_df))) {
+  map_df[[cn]] <- suppressWarnings(as.numeric(map_df[[cn]]))
+}
+
+# 1) Detect morphometric variables (numeric) and exclude ID-like columns
+id_like <- c("NAME","Site","SampleID","Sample","Nest","NestID","ID")
+morpho_vars <- setdiff(names(map_df)[sapply(map_df, is.numeric)], id_like)
+
+hdr("Detected morphometric variables")
+print(morpho_vars)
+
+# 2) Loop: ANOVA + Tukey + CLD per variable
+for (v in morpho_vars) {
+  # Build a small data frame with a constant response name `y`
+  dat <- map_df %>%
+    dplyr::select(Site, !!rlang::sym(v)) %>%
+    dplyr::rename(y = !!rlang::sym(v)) %>%
+    dplyr::filter(!is.na(Site), !is.na(y)) %>%
+    dplyr::mutate(Site = droplevels(factor(Site)))
+
+  # Need at least 2 site levels and >1 observation total
+  if (nlevels(dat$Site) < 2 || nrow(dat) < 2) next
+
+  hdr(paste0("ANOVA + Tukey for: ", v))
+
+  # ANOVA
+  aov_fit <- aov(y ~ Site, data = dat)
+  cat("\n--- ANOVA table ---\n")
+  print(summary(aov_fit))
+
+  # Tukey HSD (base R)
+  cat("\n--- Tukey HSD (pairwise) ---\n")
+  print(TukeyHSD(aov_fit, which = "Site"))
+
+  # Compact letter display (multcomp)
+  cat("\n--- Compact letter display (Tukey groups) ---\n")
+  gl <- glht(aov_fit, linfct = mcp(Site = "Tukey"))
+  print(cld(gl))
+}
+```
+
+```{r}
+## ── Waste vs Rural tests for ALL morphometrics (t-test w/ safe fallbacks) ───
+# Groups
+rural_sites <- c("MF","MD")
+waste_sites <- c("BRL","BWTP","DWTP","WBS")
+
+# Add Group
+map_df$Group <- NA_character_
+map_df$Group[map_df$Site %in% rural_sites] <- "Rural"
+map_df$Group[map_df$Site %in% waste_sites] <- "Waste"
+
+# Identify numeric morphometrics (keep BCI etc., drop IDs)
+id_like <- c("NAME","SampleID","Sample","Nest","NestID","ID","Site","Group")
+num_cols <- names(map_df)[vapply(map_df, is.numeric, logical(1))]
+morpho_vars <- setdiff(num_cols, id_like)
+
+# Safe coercion (if any numeric columns arrived as character)
+for (v in morpho_vars) map_df[[v]] <- suppressWarnings(as.numeric(map_df[[v]]))
+
+safe_test <- function(x, g) {
+  keep <- !is.na(x) & !is.na(g) & g %in% c("Rural","Waste")
+  x <- x[keep]; g <- g[keep]
+  xr <- x[g=="Rural"]; xw <- x[g=="Waste"]
+  if (length(xr) < 2 || length(xw) < 2) {
+    return(list(method="insufficient_n", p=NA_real_, stat=NA_real_, df=NA_real_, ci=c(NA,NA)))
+  }
+  vr <- var(xr, na.rm=TRUE); vw <- var(xw, na.rm=TRUE)
+  # both groups constant → no variation
+  if ((is.na(vr) || vr==0) && (is.na(vw) || vw==0)) {
+    return(list(method="no_variation_both_groups", p=NA_real_, stat=NA_real_, df=NA_real_, ci=c(NA,NA)))
+  }
+  # Try Welch t-test first
+  tt <- try(t.test(xr, xw, var.equal=FALSE), silent=TRUE)
+  if (!inherits(tt, "try-error")) {
+    return(list(method="Welch_t", p=unname(tt$p.value),
+                stat=unname(tt$statistic), df=unname(tt$parameter),
+                ci=unname(tt$conf.int)))
+  }
+  # Fallback: Wilcoxon rank-sum (nonparametric)
+  wt <- suppressWarnings(wilcox.test(xr, xw, exact=FALSE))
+  return(list(method="Wilcoxon_rank_sum", p=unname(wt$p.value),
+              stat=NA_real_, df=NA_real_, ci=c(NA,NA)))
+}
+
+one_var <- function(v) {
+  x <- map_df[[v]]; g <- map_df$Group
+  keep <- !is.na(x) & !is.na(g) & g %in% c("Rural","Waste")
+  xr <- x[keep & g=="Rural"]; xw <- x[keep & g=="Waste"]
+  out <- safe_test(x, g)
+  data.frame(
+    variable     = v,
+    n_rural      = length(xr),
+    n_waste      = length(xw),
+    mean_rural   = mean(xr, na.rm=TRUE),
+    mean_waste   = mean(xw, na.rm=TRUE),
+    diff_RminusW = mean(xr, na.rm=TRUE) - mean(xw, na.rm=TRUE),
+    test_method  = out$method,
+    t_stat       = out$stat,
+    df           = out$df,
+    p_value      = out$p,
+    ci_low       = out$ci[1],
+    ci_high      = out$ci[2],
+    stringsAsFactors = FALSE
+  )
+}
+
+res_list <- lapply(morpho_vars, one_var)
+t_results <- do.call(rbind, res_list)
+t_results <- t_results[order(t_results$p_value), ]
+
+# View all
+print(t_results, row.names=FALSE)
+
+# If you want only significant (p<0.05):
+# subset(t_results, !is.na(p_value) & p_value < 0.05)
+```
+
+```{r}
+## ── Site-level table: alpha (Shannon, Simpson), within-site beta (Bray–Curtis) ──
+suppressPackageStartupMessages({
+  library(phyloseq); library(vegan)
+  library(dplyr); library(tidyr); library(tibble); library(stringr)
+})
+
+# Choose your phyloseq object (relative abundances help for β)
+ps0 <- dat_lessHOST  # or dat_r
+
+# Helper: standard error of the mean
+se <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+# 1) Alpha diversity per sample (Shannon, Simpson)
+alpha_df <- estimate_richness(ps0, measures = c("Shannon", "Simpson")) %>%
+  rownames_to_column("Sample")
+
+meta <- as(sample_data(ps0), "data.frame") %>%
+  rownames_to_column("Sample")
+
+alpha_meta <- alpha_df %>%
+  left_join(meta, by = "Sample") %>%
+  filter(!is.na(Site))
+
+# 2) Per-site alpha stats (mean ± SEM)
+alpha_site <- alpha_meta %>%
+  group_by(Site) %>%
+  summarise(
+    n_samples     = n(),
+    Shannon_mean  = mean(Shannon, na.rm = TRUE),
+    Shannon_SEM   = se(Shannon),
+    Simpson_mean  = mean(Simpson, na.rm = TRUE),
+    Simpson_SEM   = se(Simpson),
+    .groups = "drop"
+  )
+
+# 3) Within-site β-diversity (mean pairwise Bray–Curtis among samples in the same site)
+#    Use relative abundance to mitigate library size effects
+ps_rel <- transform_sample_counts(ps0, function(x) x / sum(x))
+X <- as(otu_table(ps_rel), "matrix")
+if (taxa_are_rows(ps_rel)) X <- t(X)
+
+# Bray–Curtis on all samples
+bc <- vegdist(X, method = "bray")  # this is a 'dist' object in sample order of X
+
+# Map sample names to sites
+sam_site <- meta$Site[match(rownames(X), meta$Sample)]
+names(sam_site) <- rownames(X)
+
+# function: mean ± SEM of within-site distances
+within_site_stats <- function(site_name) {
+  sids <- names(sam_site)[sam_site == site_name]
+  if (length(sids) < 2) {
+    return(tibble(Site = site_name,
+                  Beta_within_mean = NA_real_,
+                  Beta_within_SEM  = NA_real_))
+  }
+  # pull the upper-tri distances for this site's samples
+  idx <- which(rownames(X) %in% sids)
+  subd <- as.matrix(bc)[idx, idx, drop = FALSE]
+  # keep upper triangle without diagonal
+  dvals <- subd[upper.tri(subd, diag = FALSE)]
+  tibble(
+    Site = site_name,
+    Beta_within_mean = mean(dvals, na.rm = TRUE),
+    Beta_within_SEM  = se(dvals)
+  )
+}
+
+beta_site <- bind_rows(lapply(unique(na.omit(sam_site)), within_site_stats))
+
+# 4) Combine alpha + beta + n into one table
+site_table <- alpha_site %>%
+  left_join(beta_site, by = "Site") %>%
+  arrange(Site) %>%
+  # Optional: round for clean display (adjust as you like)
+  mutate(
+    across(c(Shannon_mean, Shannon_SEM, Simpson_mean, Simpson_SEM,
+             Beta_within_mean, Beta_within_SEM), ~round(.x, 3))
+  )
+
+cat("\n=== Site-level diversity summary ===\n")
+print(site_table)
+```
+
+```{r}
+## ======================= Firmicutes:Proteobacteria (F:P) tests =======================
+## Requirements:
+## - phyloseq object `ps`
+## - sample_data(ps)$Condition with levels "Rural" and "Waste"
+suppressPackageStartupMessages({
+  library(phyloseq)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(stringr)
+})
+
+## ---- 0) Checks ---------------------------------------------------------------------
+stopifnot(inherits(ps, "phyloseq"))
+if (is.null(sample_data(ps, errorIfNULL = FALSE))) stop("ps has no sample_data.")
+if (is.null(tax_table(ps,  errorIfNULL = FALSE))) stop("ps has no tax_table.")
+if (!"Phylum" %in% colnames(as.data.frame(tax_table(ps)))) stop("No 'Phylum' in tax_table(ps).")
+if (is.null(sample_data(ps)$Condition)) stop("sample_data(ps)$Condition is missing.")
+# Keep an explicit key for joining
+sample_key <- sample_names(ps)
+
+## ---- 1) Phylum agglomeration + relative abundance on full community ----------------
+ps_phylum <- tax_glom(ps, taxrank = "Phylum", NArm = TRUE)
+ps_rel <- transform_sample_counts(ps_phylum, function(x) if (sum(x) > 0) x / sum(x) else x)
+
+## ---- 2) Standardize phylum names (Firmicutes/Bacillota; Proteobacteria/Pseudomonadota)
+tax_df <- as.data.frame(tax_table(ps_rel)) %>%
+  mutate(
+    Phylum_chr = as.character(Phylum),
+    Phylum_std = case_when(
+      str_to_lower(Phylum_chr) %in% c("firmicutes","bacillota") ~ "Firmicutes",
+      str_to_lower(Phylum_chr) %in% c("proteobacteria","pseudomonadota") ~ "Proteobacteria",
+      TRUE ~ Phylum_chr
+    )
+  ) %>%
+  rownames_to_column("OTU")
+
+## ---- 3) Sample-by-phylum (relative abundance), then keep only the two target phyla --
+otu_mat <- as(otu_table(ps_rel), "matrix")
+if (taxa_are_rows(ps_rel)) otu_mat <- t(otu_mat)
+
+df_long <- as.data.frame(otu_mat) %>%
+  rownames_to_column("SampleKey") %>%
+  pivot_longer(-SampleKey, names_to = "OTU", values_to = "RA") %>%
+  left_join(tax_df[, c("OTU","Phylum_std")], by = "OTU") %>%
+  group_by(SampleKey, Phylum_std) %>%
+  summarize(RA = sum(RA, na.rm = TRUE), .groups = "drop")
+
+df_wide <- df_long %>%
+  filter(Phylum_std %in% c("Firmicutes","Proteobacteria")) %>%
+  pivot_wider(names_from = Phylum_std, values_from = RA, values_fill = 0)
+
+## ---- 4) Clean metadata join (force atomic tibble; avoid S4/non-vector cols) --------
+meta_df <- sample_data(ps_rel) %>%
+  as.data.frame(stringsAsFactors = FALSE) %>%
+  rownames_to_column("SampleKey") %>%
+  as_tibble(.name_repair = "unique") %>%
+  mutate(
+    across(everything(), ~ as.vector(.x)),                 # coerce to atomic vectors
+    Condition = factor(Condition, levels = c("Rural","Waste"))
+  )
+
+dat <- df_wide %>%
+  right_join(meta_df, by = "SampleKey") %>%               # keep all samples in metadata
+  mutate(
+    Firmicutes     = as.numeric(replace_na(Firmicutes, 0)),
+    Proteobacteria = as.numeric(replace_na(Proteobacteria, 0))
+  )
+
+## ---- 5) Ratios (raw + log, robust to zeros) ---------------------------------------
+# Raw ratio: NA if Proteobacteria == 0 to avoid Inf explosions
+dat <- dat %>%
+  mutate(FP_ratio = ifelse(Proteobacteria > 0, Firmicutes / Proteobacteria, NA_real_))
+
+# Data-driven pseudocount = half of the smallest nonzero across both phyla (fallback 1e-6)
+min_F <- suppressWarnings(min(dat$Firmicutes[dat$Firmicutes > 0], na.rm = TRUE))
+min_P <- suppressWarnings(min(dat$Proteobacteria[dat$Proteobacteria > 0], na.rm = TRUE))
+min_pos <- suppressWarnings(min(min_F, min_P))
+pseudo  <- if (is.finite(min_pos)) 0.5 * min_pos else 1e-6
+
+dat <- dat %>%
+  mutate(FP_logratio = log((Firmicutes + pseudo) / (Proteobacteria + pseudo)))
+
+## ---- 6) Summaries ------------------------------------------------------------------
+summary_ratio <- dat %>%
+  select(SampleKey, Condition, Firmicutes, Proteobacteria, FP_ratio, FP_logratio) %>%
+  filter(!is.na(Condition)) %>%
+  group_by(Condition) %>%
+  summarize(
+    n               = dplyr::n(),
+    mean_ratio      = mean(FP_ratio, na.rm = TRUE),
+    sd_ratio        = sd(FP_ratio, na.rm = TRUE),
+    median_ratio    = median(FP_ratio, na.rm = TRUE),
+    iqr_ratio       = IQR(FP_ratio, na.rm = TRUE),
+    mean_logratio   = mean(FP_logratio, na.rm = TRUE),
+    sd_logratio     = sd(FP_logratio, na.rm = TRUE),
+    median_logratio = median(FP_logratio, na.rm = TRUE),
+    iqr_logratio    = IQR(FP_logratio, na.rm = TRUE),
+    zeros_F         = sum(Firmicutes == 0, na.rm = TRUE),
+    zeros_P         = sum(Proteobacteria == 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(summary_ratio)
+
+## ---- 7) Tests (vectors only) -------------------------------------------------------
+tt_log <- t.test(FP_logratio ~ Condition, data = dat)                   # primary
+wt_raw <- wilcox.test(FP_ratio ~ Condition, data = dat, exact = FALSE)  # secondary
+
+## ---- 8) Compact report lines -------------------------------------------------------
+cat("\n--- REPORT ---\n")
+cat(sprintf("Welch t-test on F:P log-ratio: t = %.3f, df = %.2f, p = %.4g\n",
+            tt_log$statistic, tt_log$parameter, tt_log$p.value))
+cat(sprintf("Wilcoxon on F:P raw ratio:    W = %s, p = %.4g\n",
+            as.character(wt_raw$statistic), wt_raw$p.value))
+cat("\nGroup summaries:\n")
+```
+
+```{r}
+## ================== F:P ratio by Condition (add-on; does not touch dat) ==================
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+})
+
+# Collapse to Phylum level
+ps_phylum <- tax_glom(dat, taxrank = "Phylum")
+
+# Per-sample relative abundances
+df_long <- psmelt(ps_phylum) %>%
+  group_by(Sample) %>%
+  mutate(.tot = sum(Abundance)) %>%
+  ungroup() %>%
+  mutate(rel = Abundance / .tot)
+
+# Standardize names
+df_long <- df_long %>%
+  mutate(Phylum_std = case_when(
+    Phylum == "Bacillota"      ~ "Firmicutes",
+    Phylum == "Pseudomonadota" ~ "Proteobacteria",
+    TRUE                       ~ as.character(Phylum)
+  ))
+
+# Wide per-sample
+df_wide <- df_long %>%
+  group_by(Sample, Phylum_std) %>%
+  summarise(rel = sum(rel), .groups = "drop") %>%
+  pivot_wider(names_from = Phylum_std, values_from = rel, values_fill = 0)
+
+# Metadata
+meta <- data.frame(sample_data(dat))
+meta$Sample <- rownames(meta)
+if (!"Condition" %in% colnames(meta)) {
+  meta$Condition <- ifelse(meta$Site %in% c("MF","MD"), "Rural", "Waste")
+}
+meta$Condition <- factor(meta$Condition, levels = c("Rural","Waste"))
+
+# Join & compute F:P ratio
+safe_ratio <- function(num, den, eps = 1e-6) (num + eps) / (den + eps)
+
+fp_df <- meta %>%
+  inner_join(df_wide, by = "Sample") %>%
+  mutate(
+    FP_ratio  = safe_ratio(Firmicutes, Proteobacteria),
+    log10_FP  = log10(FP_ratio)
+  )
+
+# Group summaries
+group_summary <- fp_df %>%
+  group_by(Condition) %>%
+  summarise(
+    n        = n(),
+    mean_FP  = mean(FP_ratio),
+    sd_FP    = sd(FP_ratio),
+    mean_log = mean(log10_FP),
+    sd_log   = sd(log10_FP),
+    .groups  = "drop"
+  )
+cat("\n=== Per-group descriptives (F:P) ===\n"); print(group_summary)
+
+# Welch t-test (primary on log10 scale)
+tt_log <- t.test(log10_FP ~ Condition, data = fp_df, var.equal = FALSE)
+cat("\n=== Welch t-test on log10(F:P) ===\n"); print(tt_log)
+
+# Optional raw ratio t-test
+tt_raw <- t.test(FP_ratio ~ Condition, data = fp_df, var.equal = FALSE)
+cat("\n=== Welch t-test on raw F:P ratio ===\n"); print(tt_raw)
+```
