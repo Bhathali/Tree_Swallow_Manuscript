@@ -1,0 +1,634 @@
+```{r}
+## ============================== LIBS ==============================
+suppressPackageStartupMessages({
+  library(phyloseq)
+  library(vegan)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(readr)
+  library(stringi)
+  library(stringr)
+  library(purrr)
+})
+
+set.seed(42)
+
+## ============================ CONFIG =============================
+# Choose your working phyloseq object here. This logic picks the first that exists.
+ps <- if (exists("ps") && inherits(ps, "phyloseq")) ps else
+      if (exists("dat_new") && inherits(dat_new, "phyloseq")) dat_new else
+      if (exists("ps0") && inherits(ps0, "phyloseq")) ps0 else
+      if (exists("dat") && inherits(dat, "phyloseq")) dat else
+      stop("Couldn't find a phyloseq object named ps, dat_new, ps0, or dat.")
+
+# Condition based on sites (edit rural set if needed)
+rural_sites <- c("MF","MD")
+cutoff_prop <- 0.70
+tax_level_default <- "Phylum"   # switch to "Genus" when needed
+
+## =========================== HELPERS =============================
+normalize_ids <- function(x){
+  x <- as.character(x)
+  x <- stri_trans_general(x, "Any-ASCII")
+  x <- trimws(x)
+  x <- gsub("\\s+", "", x)
+  x <- gsub("[\uFEFF\u200B]", "", x)
+  x
+}
+
+safe_add_idcol <- function(df, idcol_name){
+  rn <- rownames(df)
+  if (idcol_name %in% names(df)) {
+    if (!isTRUE(all.equal(normalize_ids(df[[idcol_name]]), normalize_ids(rn)))) {
+      df[[paste0(idcol_name, "_rownames")]] <- rn
+    }
+    df
+  } else {
+    tibble::rownames_to_column(as.data.frame(df), var = idcol_name)
+  }
+}
+
+safe_taxon <- function(x, rank = "Rank", fallback_prefix = "Unassigned"){
+  x <- ifelse(is.na(x) | x == "" | str_to_lower(x) %in% c("na","unassigned","unknown"),
+              paste0(fallback_prefix, "_", rank), x)
+  make.unique(x)
+}
+
+pretty_phylum_name <- function(x){
+  x <- sub("^Bacillota$", "Firmicutes", x)
+  x <- sub("^Pseudomonadota$", "Proteobacteria", x)
+  ifelse(is.na(x) | x == "", "Unclassified_Phylum", x)
+}
+
+## Collapse to any rank, return relative-abundance matrix (samples × taxa) and ps object
+ps_to_tax_relmat <- function(ps, taxrank = "Phylum", NArm = TRUE){
+  psT <- tax_glom(ps, taxrank = taxrank, NArm = NArm)
+  tt  <- as.data.frame(tax_table(psT), stringsAsFactors = FALSE)
+  taxa_names(psT) <- safe_taxon(tt[[taxrank]], rank = taxrank, fallback_prefix = "Unassigned")
+
+  psT_rel <- transform_sample_counts(psT, function(x) if (sum(x)==0) x else x/sum(x))
+  mat <- as(otu_table(psT_rel), "matrix")
+  if (taxa_are_rows(psT_rel)) mat <- t(mat)
+  mat <- mat[, colSums(mat, na.rm = TRUE) > 0, drop = FALSE]
+  mat[is.na(mat)] <- 0
+  list(mat = mat, ps_rel = psT_rel)
+}
+
+avg_sqdist_within <- function(X){
+  if (nrow(X) < 2) return(setNames(rep(NA_real_, ncol(X)), colnames(X)))
+  pairs <- combn(seq_len(nrow(X)), 2, simplify = FALSE)
+  Reduce(`+`, lapply(pairs, function(p) (X[p[1],]-X[p[2],])^2)) / length(pairs)
+}
+
+avg_sqdist_between <- function(XA, XB){
+  pairs <- expand.grid(a = seq_len(nrow(XA)), b = seq_len(nrow(XB)))
+  Reduce(`+`, apply(pairs, 1, function(p) (XA[p["a"],]-XB[p["b"],])^2)) / nrow(pairs)
+}
+
+## Tidy a vegan::simper() result (one contrast) → trim to cutoff
+tidy_simper_vegan <- function(simper_obj, label, cutoff = 0.70){
+  bind_rows(lapply(names(simper_obj), function(nm){
+    df <- as.data.frame(simper_obj[[nm]])
+    if (nrow(df) == 0) return(tibble())
+    df %>%
+      rownames_to_column("Taxon") %>%
+      mutate(Contrast   = label,
+             Contrib    = average / sum(average, na.rm = TRUE),
+             Cum        = cumsum(Contrib)) %>%
+      filter(Cum <= cutoff) %>%
+      transmute(Contrast, Taxon, Avg = average, SD = sd, Ratio = ratio, AvA = ava, AvB = avb,
+                Contrib = round(Contrib, 4), Cum = round(Cum, 4))
+  }))
+}
+
+## Build/refresh Condition from Site once
+ensure_condition <- function(ps, site_col = "Site", rural = c("MF","MD")){
+  sd <- as.data.frame(sample_data(ps))
+  stopifnot(site_col %in% names(sd))
+  sd[[site_col]] <- factor(sd[[site_col]])
+  if (!("Condition" %in% names(sd))) {
+    sd$Condition <- ifelse(sd[[site_col]] %in% rural, "Rural", "Waste")
+  }
+  sd$Condition <- factor(sd$Condition, levels = c("Rural","Waste"))
+  sample_data(ps) <- sample_data(sd)
+  ps
+}
+```
+
+```{r}
+## ===================== IMPORT ====================
+outdir <- ##Directory with fles
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+export_old <- function(ps, outdir){
+  otu_df_raw <- as.data.frame(otu_table(ps))
+  if (taxa_are_rows(ps)) {
+    otu_df <- safe_add_idcol(otu_df_raw, "ASV")
+    nm <- names(otu_df); nm[-1] <- normalize_ids(nm[-1]); names(otu_df) <- nm
+  } else {
+    otu_df <- safe_add_idcol(otu_df_raw, "SampleID")
+  }
+  write_csv(otu_df, file.path(outdir, "otu_table.csv"))
+
+  tax_df <- safe_add_idcol(as.data.frame(tax_table(ps)), "ASV")
+  write_csv(tax_df, file.path(outdir, "taxonomy.csv"))
+
+  meta_df <- safe_add_idcol(as.data.frame(sample_data(ps)), "SampleID")
+  meta_df$SampleID <- normalize_ids(meta_df$SampleID)
+  write_csv(meta_df, file.path(outdir, "metadata.csv"))
+
+  alpha_df <- estimate_richness(ps, measures = c("Shannon","Simpson")) %>% safe_add_idcol("SampleID")
+  alpha_df$SampleID <- normalize_ids(alpha_df$SampleID)
+  write_csv(alpha_df, file.path(outdir, "alpha_diversity.csv"))
+
+  ord <- ordinate(ps, method="PCoA", distance="bray")
+  scores <- as.data.frame(ord$vectors)[,1:3, drop = FALSE]
+  scores$SampleID <- normalize_ids(rownames(scores))
+  write_csv(scores, file.path(outdir, "bray_pcoa_scores.csv"))
+  cat("✅ CSVs exported.\n")
+}
+```
+
+```{r}
+## ====================== CONDITION & BASE DATA =====================
+ps <- ensure_condition(ps, site_col = "Site", rural = rural_sites)
+sd <- as.data.frame(sample_data(ps))
+```
+
+
+```{r}
+# F:P ratio by Condition
+ph <- tax_glom(ps, taxrank = "Phylum", NArm = FALSE)
+
+df_long <- psmelt(ph) %>%
+  group_by(Sample) %>% mutate(.tot = sum(Abundance)) %>% ungroup() %>%
+  mutate(rel = Abundance / .tot,
+         Phylum_std = case_when(
+           Phylum == "Bacillota"      ~ "Firmicutes",
+           Phylum == "Pseudomonadota" ~ "Proteobacteria",
+           TRUE                       ~ as.character(Phylum)
+         ))
+
+df_wide <- df_long %>%
+  group_by(Sample, Phylum_std) %>%
+  summarise(rel = sum(rel), .groups = "drop") %>%
+  pivot_wider(names_from = Phylum_std, values_from = rel, values_fill = 0)
+
+meta <- as(sample_data(ps), "data.frame"); meta$Sample <- rownames(meta)
+
+fp_df <- inner_join(meta, df_wide, by = "Sample") %>%
+  mutate(FP_ratio = (Firmicutes + 1e-6) / (Proteobacteria + 1e-6),
+         log10_FP = log10(FP_ratio))
+
+cat("\n=== Per-group descriptives (F:P) ===\n")
+print(fp_df %>%
+        group_by(Condition) %>%
+        summarise(n = n(),
+                  mean_FP  = mean(FP_ratio),
+                  sd_FP    = sd(FP_ratio),
+                  mean_log = mean(log10_FP),
+                  sd_log   = sd(log10_FP),
+                  .groups  = "drop"))
+
+cat("\n=== Welch t-test on log10(F:P) ===\n"); print(t.test(log10_FP ~ Condition, data = fp_df))
+cat("\n=== Welch t-test on raw F:P ratio ===\n");  print(t.test(FP_ratio ~ Condition, data = fp_df))
+```
+
+```{r}
+# ----- BETWEEN CONDITIONS — SIMPER (Phylum, Top ≤70%) — FIXED NAMES & Cum -----
+XP_info <- ps_to_tax_relmat(ps, taxrank = "Phylum", NArm = FALSE)  # columns = real Phylum names
+X       <- XP_info$mat
+colnames(X) <- pretty_phylum_name(colnames(X))                     # map Bacillota→Firmicutes, etc.
+md      <- as(sample_data(XP_info$ps_rel), "data.frame")
+
+stopifnot(nlevels(md$Condition) == 2)
+pair_lab <- paste(levels(md$Condition), collapse = "_vs_")
+
+sim_obj <- vegan::simper(X, group = md$Condition, permutations = 999)
+sim_sum <- summary(sim_obj, ordered = TRUE)
+
+# Find the contrast element regardless of order (e.g., "Rural_Waste" or "Waste_Rural")
+lvl <- levels(md$Condition)
+elt <- names(sim_sum)[grepl(paste0("^", lvl[1], "_", lvl[2], "$|^", lvl[2], "_", lvl[1], "$"),
+                            names(sim_sum))]
+stopifnot(length(elt) == 1)
+
+df <- as.data.frame(sim_sum[[elt]])
+if (!nrow(df)) {
+  cat("\n=== SIMPER Between Conditions (Phylum) — no rows ===\n")
+} else {
+  bt_tbl <- df %>%
+    tibble::rownames_to_column("Taxon") %>%               # Taxon already = real Phylum from X cols
+    dplyr::select(Taxon, average, sd, ratio, ava, avb) %>%
+    dplyr::arrange(dplyr::desc(average)) %>%              # sort for display
+    dplyr::mutate(
+      Contrib = average / sum(average, na.rm = TRUE),     # recompute contrib
+      Cum     = cumsum(Contrib)                           # recompute cum in this order
+    ) %>%
+    dplyr::filter(Cum <= cutoff_prop) %>%
+    dplyr::transmute(
+      Contrast = pair_lab,
+      Taxon,
+      Avg   = average,
+      AvA   = ava,
+      AvB   = avb,
+      Contrib,
+      Cum
+    )
+
+  cat("\n=== SIMPER Between Conditions (Phylum) — Top ≤70% ===\n")
+  print(bt_tbl, n = min(30, nrow(bt_tbl)))
+}
+```
+
+```{r}
+# Within Condition — SIMPER-style (Phylum, full table; no ≤70% filter)
+Xall <- make_comm_phylum(ps)
+meta <- as(sample_data(ps), "data.frame")
+Xall <- Xall[rownames(meta), , drop = FALSE]
+taxa <- colnames(Xall)
+
+for (cond in levels(meta$Condition)) {
+  idx <- meta$Condition == cond
+  Xc  <- Xall[idx, , drop = FALSE]
+  if (nrow(Xc) < 2) {
+    cat("\n=== Within-Condition (Phylum) — ", cond, ": skipped (n < 2) ===\n", sep = "")
+    next
+  }
+  AvSq  <- avg_sqdist_within(Xc)
+  mu    <- colMeans(Xc)
+  denom <- sum(AvSq, na.rm = TRUE)
+
+  tbl <- tibble(
+    Condition = cond,
+    Taxon     = taxa,
+    AvSqDist  = as.numeric(AvSq[taxa]),
+    AvValue   = as.numeric(mu[taxa])
+  ) %>%
+    arrange(desc(AvSqDist)) %>%
+    mutate(
+      Contrib    = if (is.finite(denom) && denom > 0) AvSqDist/denom else 0,
+      Cum        = cumsum(replace_na(Contrib, 0)),
+      InTop70    = Cum <= cutoff_prop,
+      ContribPct = 100 * Contrib,
+      CumPct     = 100 * Cum
+    )
+  # If you ever want to trim: tbl <- filter(tbl, InTop70)
+
+  cat("\n=== Within-Condition (Phylum) — ", cond, " — FULL TABLE ===\n", sep = "")
+  print(tbl, n = min(100, nrow(tbl)))
+}
+```
+
+```{r}
+# ----- Pairwise Between Sites — SIMPER (Phylum, Top ≤70%)  — FIXED NAMES & Cum -----
+# 1) Build a sample × Phylum rel-abundance matrix with safe, readable names
+XP_info <- ps_to_tax_relmat(ps, taxrank = "Phylum", NArm = FALSE)
+X       <- XP_info$mat
+colnames(X) <- pretty_phylum_name(colnames(X))
+md      <- as(sample_data(XP_info$ps_rel), "data.frame")
+
+# [ADD] collector for all pairwise tables
+all_tbls <- list()
+
+# 2) Pairwise SIMPER across sites
+md$Site <- droplevels(factor(md$Site))
+sites <- levels(md$Site)
+if (length(sites) < 2) {
+  cat("\nNo site pairs.\n")
+} else {
+  pr <- t(combn(sites, 2))
+  for (i in seq_len(nrow(pr))) {
+    a <- pr[i, 1]; b <- pr[i, 2]
+    idx  <- md$Site %in% c(a, b)
+    subX <- X[idx, , drop = FALSE]
+    subM <- droplevels(md[idx, , drop = FALSE])
+
+    nA <- sum(subM$Site == a); nB <- sum(subM$Site == b)
+    if (nA < 2 || nB < 2) {
+      message("Skipping ", a, "_vs_", b, " (need ≥2 per site; got ", nA, " & ", nB, ")")
+      next
+    }
+
+    pair_lab <- paste0(a, "_vs_", b)
+    sim_obj  <- vegan::simper(subX, group = subM$Site, permutations = 999)
+    sim_sum  <- summary(sim_obj, ordered = TRUE)
+
+    elt <- names(sim_sum)[grepl(paste0("^", a, "_", b, "$|^", b, "_", a, "$"), names(sim_sum))]
+    if (length(elt) != 1) {
+      warning("Could not uniquely match contrast for ", pair_lab, "; found: ", paste(elt, collapse=", "))
+      next
+    }
+
+    df <- as.data.frame(sim_sum[[elt]])
+    if (!nrow(df)) {
+      cat("\n--- ", pair_lab, " — no rows ---\n", sep = "")
+      next
+    }
+
+    # 3) Sort → recompute Contrib & Cum in shown order → trim to ≤70%
+    tbl <- df %>%
+      tibble::rownames_to_column("Taxon") %>%
+      dplyr::select(Taxon, average, sd, ratio, ava, avb) %>%
+      dplyr::arrange(dplyr::desc(average)) %>%
+      dplyr::mutate(
+        Contrib = average / sum(average, na.rm = TRUE),
+        Cum     = cumsum(Contrib)
+      ) %>%
+      dplyr::filter(Cum <= cutoff_prop) %>%
+      dplyr::transmute(
+        Contrast = pair_lab,
+        Taxon,
+        Avg   = average,
+        AvA   = ava,
+        AvB   = avb,
+        Contrib,
+        Cum
+      )
+
+    cat("\n--- ", pair_lab, " (", nA, " vs ", nB, " samples) — Top ≤70% ---\n", sep = "")
+    print(tbl %>% dplyr::select(Contrast, Taxon, Avg, AvA, AvB, Contrib, Cum),
+          n = min(25, nrow(tbl)))
+
+    # [ADD] collect each per-pair table
+    all_tbls[[pair_lab]] <- tbl
+  }
+
+  # [ADD] combine everything into one table
+  final_tbl <- dplyr::bind_rows(all_tbls)
+
+  # [ADD] print (or export) the single combined table
+  print(final_tbl, n = min(100, nrow(final_tbl)))
+  # write.csv(final_tbl, "SIMPER_Pairwise_Phylum_ALL.csv", row.names = FALSE)
+}
+```
+
+```{r}
+# Within Site — SIMPER-style (Phylum, Top ≤70%)
+Xall <- make_comm_phylum(ps)
+meta <- as(sample_data(ps), "data.frame")
+Xall <- Xall[rownames(meta), , drop = FALSE]
+taxa <- colnames(Xall)
+
+sites <- droplevels(factor(meta$Site)) %>% levels()
+any_printed <- FALSE
+for (s in sites) {
+  idx <- meta$Site == s
+  Xs  <- Xall[idx, , drop = FALSE]
+  if (nrow(Xs) < 2) {
+    cat(paste0("\n==== ", s, ": skipped (n = ", nrow(Xs), " < 2) ====\n"))
+    next
+  }
+  AvSq  <- avg_sqdist_within(Xs)
+  mu    <- colMeans(Xs)
+  denom <- sum(AvSq, na.rm = TRUE)
+
+  tbl <- tibble(
+    Site     = s,
+    Taxon    = taxa,
+    AvSqDist = as.numeric(AvSq[taxa]),
+    AvValue  = as.numeric(mu[taxa])
+  ) %>%
+    arrange(desc(AvSqDist)) %>%
+    mutate(
+      Contrib    = if (denom > 0) AvSqDist/denom else 0,
+      Cum        = cumsum(replace_na(Contrib, 0)),
+      InTop70    = Cum <= cutoff_prop,
+      ContribPct = 100 * Contrib,
+      CumPct     = 100 * Cum
+    ) %>%
+    filter(InTop70)
+
+  cat("\n==== WITHIN-SITE (Phylum) — Top ≤70% — ", s, " ====\n", sep = "")
+  if (nrow(tbl)) { print(tbl, n = min(40, nrow(tbl))); any_printed <- TRUE }
+  else { cat("(no variability; nothing to show)\n") }
+}
+if (!any_printed) cat("\nNo sites produced ≤70% tables.\n")
+```
+
+```{r}
+# ----- Genus helpers -----
+pretty_genus <- function(x){
+  x <- ifelse(is.na(x) | x == "", "Unclassified_Genus", x)
+  x
+}
+make_comm_genus <- function(ps){
+  out <- ps_to_tax_relmat(ps, taxrank = "Genus", NArm = FALSE)
+  out$mat
+}
+```
+
+```{r}
+# ----- WITHIN-SITE (Genus) -----
+XallG <- make_comm_genus(ps)
+meta  <- as(sample_data(ps), "data.frame")
+XallG <- XallG[rownames(meta), , drop = FALSE]
+taxaG <- colnames(XallG)
+
+sites <- droplevels(factor(meta$Site)) %>% levels()
+any_printed <- FALSE
+for (s in sites) {
+  idx <- meta$Site == s
+  Xs  <- XallG[idx, , drop = FALSE]
+  if (nrow(Xs) < 2) {
+    cat(paste0("\n==== ", s, " (Genus): skipped (n = ", nrow(Xs), " < 2) ====\n"))
+    next
+  }
+  AvSq  <- avg_sqdist_within(Xs)
+  mu    <- colMeans(Xs)
+  denom <- sum(AvSq, na.rm = TRUE)
+
+  tbl <- tibble(
+    Site     = s,
+    Taxon    = pretty_genus(taxaG),
+    AvSqDist = as.numeric(AvSq[taxaG]),
+    AvValue  = as.numeric(mu[taxaG])
+  ) %>%
+    arrange(desc(AvSqDist)) %>%
+    mutate(
+      Contrib    = if (denom > 0) AvSqDist/denom else 0,
+      Cum        = cumsum(replace_na(Contrib, 0)),
+      InTop70    = Cum <= cutoff_prop,
+      ContribPct = 100 * Contrib,
+      CumPct     = 100 * Cum
+    ) %>%
+    filter(InTop70)
+
+  cat("\n==== WITHIN-SITE (Genus) — Top ≤70% — ", s, " ====\n", sep = "")
+  if (nrow(tbl)) { print(tbl, n = min(40, nrow(tbl))); any_printed <- TRUE }
+  else { cat("(no variability; nothing to show)\n") }
+}
+if (!any_printed) cat("\nNo sites produced ≤70% tables (Genus).\n")
+```
+
+```{r}
+# ----- BETWEEN SITES (Genus) — with real Genus names -----
+XG_info <- ps_to_tax_relmat(ps, taxrank = "Genus", NArm = FALSE)
+XG      <- XG_info$mat
+mdG     <- as(sample_data(XG_info$ps_rel), "data.frame")
+
+mdG$Site <- droplevels(factor(mdG$Site))
+sites <- levels(mdG$Site)
+
+# ⭐ collector
+all_genus_tbls <- list()
+
+if (length(sites) < 2) {
+  cat("\nNo site pairs (Genus).\n")
+} else {
+  pr <- t(combn(sites, 2))
+  for (i in seq_len(nrow(pr))) {
+    a <- pr[i, 1]; b <- pr[i, 2]
+    idx  <- mdG$Site %in% c(a, b)
+    subX <- XG[idx, , drop = FALSE]
+    subM <- droplevels(mdG[idx, , drop = FALSE])
+
+    nA <- sum(subM$Site == a); nB <- sum(subM$Site == b)
+    if (nA < 2 || nB < 2) {
+      message("Skipping ", a, "_vs_", b, " (Genus; need ≥2 per site; got ", nA, " & ", nB, ")")
+      next
+    }
+
+    pair_lab <- paste0(a, "_vs_", b)
+    sim_obj  <- vegan::simper(subX, group = subM$Site, permutations = 999)
+    sim_sum  <- summary(sim_obj, ordered = TRUE)
+
+    elt <- names(sim_sum)[grepl(paste0("^", a, "_", b, "$|^", b, "_", a, "$"), names(sim_sum))]
+    if (length(elt) != 1) {
+      warning("Could not uniquely match contrast for ", pair_lab, "; found: ", paste(elt, collapse = ", "))
+      next
+    }
+
+    df <- as.data.frame(sim_sum[[elt]])
+    if (!nrow(df)) {
+      cat("\n--- ", pair_lab, " (Genus) — no rows ---\n", sep = "")
+      next
+    }
+
+    tbl <- df %>%
+      tibble::rownames_to_column("Taxon") %>%
+      dplyr::select(Taxon, average, sd, ratio, ava, avb) %>%
+      dplyr::arrange(dplyr::desc(average)) %>%
+      dplyr::mutate(
+        Contrib = average / sum(average, na.rm = TRUE),
+        Cum     = cumsum(Contrib)
+      ) %>%
+      dplyr::filter(Cum <= cutoff_prop) %>%
+      dplyr::transmute(
+        Contrast = pair_lab,
+        Taxon,
+        Avg   = average,
+        AvA   = ava,
+        AvB   = avb,
+        Contrib,
+        Cum
+      )
+
+    cat("\n--- ", pair_lab, " (Genus; ", nA, " vs ", nB, " samples) — Top ≤70% ---\n", sep = "")
+    print(tbl %>% dplyr::select(Contrast, Taxon, Avg, AvA, AvB, Contrib, Cum),
+          n = min(25, nrow(tbl)))
+
+    # ⭐ collect each per-pair table
+    all_genus_tbls[[pair_lab]] <- tbl
+  }
+
+  # ⭐ bind into one big table
+  final_genus_tbl <- dplyr::bind_rows(all_genus_tbls)
+
+  # ⭐ print or save
+  print(final_genus_tbl, n = min(100, nrow(final_genus_tbl)))
+}
+```
+
+```{r}
+# ----- WITHIN-CONDITION (Genus) -----
+XallG <- make_comm_genus(ps)
+meta  <- as(sample_data(ps), "data.frame")
+XallG <- XallG[rownames(meta), , drop = FALSE]
+taxaG <- colnames(XallG)
+
+for (cond in levels(meta$Condition)) {
+  idx <- meta$Condition == cond
+  Xc  <- XallG[idx, , drop = FALSE]
+  if (nrow(Xc) < 2) {
+    cat("\n=== Within-Condition (Genus) — ", cond, ": skipped (n < 2) ===\n", sep = "")
+    next
+  }
+  AvSq  <- avg_sqdist_within(Xc)
+  mu    <- colMeans(Xc)
+  denom <- sum(AvSq, na.rm = TRUE)
+
+  tbl <- tibble(
+    Condition = cond,
+    Taxon     = pretty_genus(taxaG),
+    AvSqDist  = as.numeric(AvSq[taxaG]),
+    AvValue   = as.numeric(mu[taxaG])
+  ) %>%
+    arrange(desc(AvSqDist)) %>%
+    mutate(
+      Contrib    = if (is.finite(denom) && denom > 0) AvSqDist/denom else 0,
+      Cum        = cumsum(replace_na(Contrib, 0)),
+      InTop70    = Cum <= cutoff_prop,
+      ContribPct = 100 * Contrib,
+      CumPct     = 100 * Cum
+    )
+  # If you ever want to trim to ≤70%:
+  # tbl <- filter(tbl, InTop70)
+
+  cat("\n=== Within-Condition (Genus) — ", cond, " — FULL TABLE ===\n", sep = "")
+  print(tbl, n = min(100, nrow(tbl)))
+}
+
+```
+
+```{r}
+# ----- BETWEEN CONDITIONS (Genus) — with real Genus names -----
+XG_info <- ps_to_tax_relmat(ps, taxrank = "Genus", NArm = FALSE)  # columns = Genus labels
+XG      <- XG_info$mat
+mdG     <- as(sample_data(XG_info$ps_rel), "data.frame")
+
+stopifnot(nlevels(mdG$Condition) == 2)
+pair_lab <- paste(levels(mdG$Condition), collapse = "_vs_")
+
+sim_obj_G <- vegan::simper(XG, group = mdG$Condition, permutations = 999)
+sim_sum_G <- summary(sim_obj_G, ordered = TRUE)
+
+# the element name will contain both condition levels in some order
+elt <- names(sim_sum_G)[grepl(paste(levels(mdG$Condition), collapse = ".*"), names(sim_sum_G)) &
+                        grepl(paste(rev(levels(mdG$Condition)), collapse = ".*"), names(sim_sum_G))]
+if (length(elt) != 1) {
+  # fallback: match either order explicitly
+  pat <- paste0("^", levels(mdG$Condition)[1], "_", levels(mdG$Condition)[2],
+                "$|^", levels(mdG$Condition)[2], "_", levels(mdG$Condition)[1], "$")
+  elt <- names(sim_sum_G)[grepl(pat, names(sim_sum_G))]
+}
+stopifnot(length(elt) == 1)
+
+df <- as.data.frame(sim_sum_G[[elt]])
+if (!nrow(df)) {
+  cat("\n=== SIMPER Between Conditions (Genus) — no rows ===\n")
+} else {
+  bt_tbl_G <- df %>%
+    tibble::rownames_to_column("Taxon") %>%           # Taxon already = real Genus from XG columns
+    dplyr::select(Taxon, average, sd, ratio, ava, avb) %>%
+    dplyr::arrange(dplyr::desc(average)) %>%          # sort first for display
+    dplyr::mutate(
+      Contrib = average / sum(average, na.rm = TRUE), # recompute contrib
+      Cum     = cumsum(Contrib)                       # recompute cum in shown order
+    ) %>%
+    dplyr::filter(Cum <= cutoff_prop) %>%
+    dplyr::transmute(
+      Contrast = pair_lab,
+      Taxon,
+      Avg   = average,
+      AvA   = ava,
+      AvB   = avb,
+      Contrib,
+      Cum
+    )
+
+  cat("\n=== SIMPER Between Conditions (Genus) — Top ≤70% ===\n")
+  print(bt_tbl_G, n = min(30, nrow(bt_tbl_G)))
+}
+```
