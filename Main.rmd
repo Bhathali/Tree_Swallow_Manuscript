@@ -1,0 +1,1752 @@
+```{r}
+library("devtools") ## this needs to be installed and loaded prior to running
+### the following:
+# install_github("helixcn/seqRFLP")
+# install_github("JCSzamosi/aftersl1p@*release")
+
+## load packages:
+library("phyloseq")
+library("ShortRead") 
+library("tidyverse") ## ggplot, dplyr, et c.
+library("Polychrome") ## generate randomized discrete colour palettes
+library("paletteer") ## generate colour palettes
+library("readr") ## read_csv function
+library("cluster")
+library("data.table")
+library("grid")
+library("ape")
+library("phangorn")
+library("phytools")
+library("vegan")
+library("seqinr")
+library("seqRFLP")
+library("AfterSl1p")
+```
+
+```{r}
+otufile <- ##Seqtab file
+
+otu_df <- read.csv(otufile, row.names = 1)
+
+seqs <- rownames(otu_df)
+
+rownames(otu_df) = NULL
+
+taxfile <- ##Taxa file
+
+all(seqs == rownames(tax_df))
+
+rownames(tax_df) = NULL
+
+metfile <- ##Mapfile
+map_df <- read.csv(metfile)
+
+map_df$NAME <- gsub('-', '.', as.character(map_df$NAME))
+
+map_df$NAME <- gsub(' ', '.', map_df$NAME)
+
+map_df$NAME <- factor(map_df$NAME,
+                      levels = c("EC1", "EC2","EC3",
+                                 "EC4", "EC5", "EC6",
+                                 "EC7", "EC8", "EC9", "EC10",  "EC11",  "EC12",  "EC13",  "EC14",  "EC15",  "EC16",  "EC17",  "EC18",  "EC19",  "EC20",  "EC21",  "EC22",  "EC23",  "EC24",  "EC25"))
+
+rownames(map_df) <- map_df$NAME
+
+rows <- sort(rownames(map_df)) 
+cols <- sort(colnames(otu_df))
+
+colnames(map_df) <- gsub(" ", ".", colnames(map_df))  # Replace spaces with dots
+colnames(map_df) <- gsub("\\(|\\)", "", colnames(map_df))  # Remove parentheses
+map_df$Weight.mg <- as.numeric(map_df$Weight..g.) # Ensuring weight is numbers
+map_df$Wing.Chord.mm <- as.numeric(map_df$Wing.Chord..mm.) # Ensuring wing chord is numbers
+map_df$Right.Tarsus.mm <- as.numeric(map_df$Right.Tarsus..mm.) # Ensuring right tarsus is numbers
+map_df$X9th.Primary.mm <- as.numeric(map_df$X9th.Primary..mm.) # Ensuring 9th primary is numbers
+map_df$Box.Temperature <- as.numeric(map_df$Box.Temperature) # Ensuring box temp is numbers
+```
+
+```{r}
+colnames(map_df) <- gsub(" ", ".", colnames(map_df))  # Replace spaces with dots
+colnames(map_df) <- gsub("\\(|\\)", "", colnames(map_df))  # Remove parentheses
+map_df$Weight.mg <- as.numeric(map_df$Weight..g.) # Ensuring weight is numbers
+map_df$Wing.Chord.mm <- as.numeric(map_df$Wing.Chord..mm.) # Ensuring wing chord is numbers
+map_df$Right.Tarsus.mm <- as.numeric(map_df$Right.Tarsus..mm.) # Ensuring right tarsus is numbers
+map_df$X9th.Primary.mm <- as.numeric(map_df$X9th.Primary..mm.) # Ensuring 9th primary is numbers
+map_df$Box.Temperature <- as.numeric(map_df$Box.Temperature) # Ensuring box temp is numbers
+```
+
+```{r}
+## Weight bar graph
+ggplot(map_df, aes(x = Site, y = Weight.mg, fill = Site)) +
+  stat_summary(fun = mean, geom = "bar") +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  labs(title = "Average Weight by Site", x = "Site", y = "Weight (g)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+## Weight box plot — match BCI style (borders + no legend)
+ggplot(map_df, aes(x = Site, y = Weight.mg, fill = Site)) +
+  geom_boxplot(outlier.shape = NA, colour = "grey20") +
+  labs(title = "Weight Distribution by Site",
+       x = "Site", y = "Weight (g)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+
+## Manually assign Condition (MF & MD = Rural; all others = Waste)
+map_df <- map_df %>%
+  dplyr::mutate(
+    Condition = ifelse(Site %in% c("MF","MD"), "Rural", "Waste"),
+    Condition = factor(Condition, levels = c("Rural","Waste"))
+  )
+
+## Weight – compare by Condition (BCI-style, vertical y-axis title)
+library(ggplot2)
+
+ggplot(map_df, aes(x = Condition, y = Weight.mg, fill = Condition)) +
+  geom_boxplot(outlier.shape = NA, colour = "grey20") +
+  geom_jitter(width = 0.10, alpha = 0.6, size = 2, colour = "grey40") +
+  scale_fill_manual(values = c(Rural = "#2C6DA4",   # blue
+                               Waste = "#8C1513")) + # deep red
+  labs(title = "Nestling weight by site condition",
+       x = NULL,
+       y = "Weight (g)") +  # switch to (mg) if that’s your unit
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 0, hjust = 0.5),
+    plot.title      = element_text(hjust = 0.5)
+  )
+```
+
+```{r}
+## Right Tarsus bar graph
+ggplot(map_df, aes(x = Site, y = Right.Tarsus.mm, fill = Site)) +
+  stat_summary(fun = mean, geom = "bar") +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  labs(title = "Average Right Tarsus by Site", x = "Site", y = "Right Tarsus (mm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+## Right Tarsus box plot
+ggplot(map_df, aes(x = Site, y = Right.Tarsus.mm, fill = Site)) +
+  geom_boxplot() +
+  labs(title = "Right Tarsus Distribution by Site", x = "Site", y = "Right Tarsus (mm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+## 9th Primary bar graph
+ggplot(map_df, aes(x = Site, y = X9th.Primary.mm, fill = Site)) +
+  stat_summary(fun = mean, geom = "bar") +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  labs(title = "Average 9th Primary by Site", x = "Site", y = "9th Primary (mm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+## 9th Primary box plot
+ggplot(map_df, aes(x = Site, y = X9th.Primary.mm, fill = Site)) +
+  geom_boxplot() +
+  labs(title = "9th Primary Distribution by Site", x = "Site", y = "9th Primary (mm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+## Clutch Size bar graph
+ggplot(map_df, aes(x = Site, y = Clutch.Size, fill = Site)) +
+  stat_summary(fun = mean, geom = "bar") +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  labs(title = "Average Clutch Size by Site", x = "Site", y = "Clutch Size") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+## Clutch Size box plot
+ggplot(map_df, aes(x = Site, y = Clutch.Size, fill = Site)) +
+  geom_boxplot() +
+  labs(title = "Clutch Size by Site", x = "Site", y = "Clutch Size") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+##Filtering
+write.csv(seqs, file= ##ASV Sequences CSV File)
+
+seqs.fasta <- dataframe2fas(seqs, file= ##ASV Sequences FASTA File)
+
+dat <-  phyloseq(otu_table(otu_df, taxa_are_rows = TRUE), # or FALSE if false
+               tax_table(as.matrix(tax_df)),
+               sample_data(map_df))
+
+samplesums <- sort(sample_sums(dat))
+
+write.csv(samplesums, file=##Read counts CSV)
+
+plot(samplesums)
+
+dat_lessHOST <- subset_taxa(dat, Kingdom=="Bacteria", Family!="Mitochondria")
+write.csv(otu_table(dat_lessHOST),file=## OTU table CSV)
+write.csv(tax_table(dat_lessHOST),file=## Tax table CSV)
+
+rel_abun_all <- transform_sample_counts(dat_lessHOST, function(x) x/sum(x))
+rel_abun_all_prune <- prune_taxa(taxa_sums(rel_abun_all) > 0.001,
+                                 rel_abun_all)                           
+```
+
+```{r}
+##SHANNON & SIMPSON    
+dat_lessHOST_n5 <- prune_taxa(taxa_sums(dat_lessHOST)>5, dat_lessHOST)
+
+min_lib <- min(sample_sums(dat))
+dat_r <- rarefy_even_depth(dat_lessHOST,
+                           sample.size=1000,
+                           verbose=FALSE,
+                           replace = FALSE)
+
+dat_r1000 <- rarefy_even_depth(dat_lessHOST, 
+                               sample.size=1000,
+                               verbose=FALSE, 
+                               replace=FALSE)
+
+write.csv(otu_table(dat_r),file=##Rarefied OTU table CSV)
+
+dat_lessHOST_phylum <- tax_glom(dat_lessHOST, taxrank="Genus")
+write.csv(otu_table(dat_lessHOST_phylum),
+          file=##noHOST OTU phylum table CSV)
+
+theme_set(theme_bw())
+colours <- createPalette(60, c("#ff0000", "#00ff00", "#0000ff"))
+swatch(colours)
+colours.un <- unname(colours)
+
+alpha <- estimate_richness(dat_lessHOST, measures=c("Shannon", "Simpson"))
+write.csv(alpha, file=##Shannon & Simpson data CSV)    
+
+plot_richness(dat_lessHOST, x="SampleID", measures=c("Shannon", "Simpson"))
+
+### rarefied ordination
+rarefy.ord <- ordinate(dat_r, method="PCoA", distance = "bray")
+prare.plot <- plot_ordination(dat_r, rarefy.ord,
+                              color = "Site",
+                              label = "SampleID",
+                              axes = c(1,2),
+                              title = "Bray-Curtis rarefy")
+
+# extract the sample_data into a data.frame
+sd <- data.frame(sample_data(dat_r))
+
+# create a new column
+sd$Pollution <- ifelse(sd$Site %in% c("BRL","BWTP","WBS","DWTP"),
+                       "Waste","Rural")
+
+# push the updated sample_data back into the phyloseq object
+sample_data(dat_r) <- sd
+
+# 1. Re-level and rename your Site factor
+sample_data(dat_r)$Site <- factor(sample_data(dat_r)$Site,
+    levels = c("BRL","BWTP","DWTP","MD","MF","WBS"),
+    labels = c("BRL","BWTP","DWTP","MD","MF","WBS")
+)
+
+# 2. Now regenerate the plot with color mapping
+p <- plot_richness(dat_r,
+                   x        = "Site",
+                   measures = c("Shannon","Simpson"),
+                   color    = "Pollution") +
+     scale_color_manual(values = c("Rural"="blue",
+                                   "Waste"    ="red")) +
+     labs(color = "Site Condition") +
+     theme_bw(base_size=14) +
+     theme(
+       axis.text.x = element_text(angle = 45, hjust = 1)  # rotate labels
+     )
+``` 
+
+```{r}
+
+### rarefied ordination
+rarefy.ord <- ordinate(dat_r, method="PCoA", distance = "bray")
+prare.plot <- plot_ordination(dat_r, rarefy.ord,
+                           color = "Site",
+                           label = "SampleID",
+                           axes = c(1,2),
+                           title = "Bray-Curtis rarefy")
+
+
+library(phyloseq)
+library(ggplot2)
+library(ggrepel)
+
+# 1) Relative abundance 
+dat_rel <- transform_sample_counts(dat, function(x) x / sum(x))
+
+# 2) Add Replicate letter (A–E) to sample_data
+sd <- data.frame(sample_data(dat_rel))
+sd$Rep <- factor(sub(".*-([A-E])$", "\\1", sd$SampleID), levels = c("A","B","C","D","E"))
+sample_data(dat_rel)$Rep <- sd$Rep
+
+# 3) PCoA (Bray–Curtis)
+ord  <- ordinate(dat_rel, method = "PCoA", distance = "bray")
+eig  <- ord$values$Relative_eig * 100
+axis1 <- sprintf("PCoA1 [%0.1f%%]", eig[1])
+axis2 <- sprintf("PCoA2 [%0.1f%%]", eig[2])
+
+# 4) Plot (only one label layer)
+p <- plot_ordination(dat_rel, ord, type = "samples",
+                     color = "Site", axes = c(1,2)) +  # ← no label= argument here
+  geom_point(aes(shape = Rep), size = 3.5, stroke = 0.7, color = "black") +
+  geom_point(aes(color = Site, shape = Rep), size = 3, alpha = 0.9) +
+  geom_text(aes(label = SampleID, color = Site), size = 2.4, vjust = -1.2, alpha = 0.8) +
+  scale_shape_manual(
+    name = "Box",
+    values = c(A = 16, B = 15, C = 17, D = 18, E = 8)
+  ) +
+  labs(title = "Bray–Curtis PCoA (no rarefaction)",
+       x = axis1, y = axis2, color = "Site") +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title       = element_text(hjust = 0.5),
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right"
+  )
+     ) 
+
+# 5. Extract per-sample PCoA coordinates
+scores <- as.data.frame(ord$vectors)   # ord$vectors = site scores
+scores$SampleID <- rownames(scores)
+
+# Keep only first 3 axes (add more if needed)
+scores <- scores[, c("SampleID","Axis.1","Axis.2","Axis.3")]
+
+# Rename columns for clarity
+colnames(scores) <- c("SampleID","BrayCurtis_PCoA1","BrayCurtis_PCoA2","BrayCurtis_PCoA3")
+
+# Add metadata (Site, Pollution, etc.)
+meta <- data.frame(sample_data(dat_rel))
+meta$SampleID <- rownames(meta)
+
+scores_annot <- dplyr::left_join(meta, scores, by = "SampleID")
+
+# Save to CSV
+outpath <- #CSV file
+readr::write_csv(scores_annot, outpath)
+```          
+
+```{r}
+##Rarefaction Curve
+library(phyloseq); library(vegan); library(dplyr); library(ggplot2)
+
+# Extract OTU matrix
+otu_mat <- as(otu_table(dat), "matrix")
+if(taxa_are_rows(dat)) otu_mat <- t(otu_mat)
+
+# Define a wider range of depths: from 0 up to, e.g., 5000 reads
+maxDepth <- max(rowSums(otu_mat))
+depths   <- seq(0, min(maxDepth, 5000), by = 100)
+
+# Compute richness at each depth
+richness_df <- bind_rows(lapply(depths, function(d) {
+  data.frame(
+    depth    = d,
+    richness = rarefy(otu_mat, sample = d)
+  )
+}), .id = NULL)
+
+# Summarize mean ± SD
+summary_df <- richness_df %>%
+  group_by(depth) %>%
+  summarize(
+    mean_rich = mean(richness),
+    sd_rich   = sd(richness),
+    .groups    = "drop"
+  )
+
+# Plot 0–5000 reads, with minDepth line at 556
+ggplot(summary_df, aes(x = depth, y = mean_rich)) +
+  geom_ribbon(aes(ymin = mean_rich - sd_rich,
+                  ymax = mean_rich + sd_rich),
+              fill = "grey80", alpha = 0.6) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = minDepth, linetype = "dashed", color = "red") +
+  coord_cartesian(xlim = c(0, 1000)) +
+  labs(
+    title = "Rarefaction Curve to 5 000 Reads (mean ±1 SD)",
+    x     = "Sequencing depth (reads)",
+    y     = "Mean observed ASVs"
+  ) +
+  theme_bw(base_size = 14)
+
+```
+
+          
+
+```{r}
+library ('SiZer')
+library('segmented')
+library('car')
+library(nlme)
+library (lme4)
+library(ggplot2)
+library(ggeffects)
+library(arm)
+library(MuMIn)
+library(AICcmodavg)
+library(robustlmm)
+library(memisc)
+library(car)
+library(lmerTest)
+library(influence.ME)
+library(dplyr)
+library(performance)
+
+##AICC Analysis
+
+# 1) Extract your sample_data into a data.frame
+df <- data.frame(sample_data(dat_r))   # or sample_data(dat) if you didn't rarefy
+
+# 2) (Re)compute Shannon if needed
+# If you already ran estimate_richness(), skip this. Otherwise:
+sh <- estimate_richness(dat_r, measures = "Shannon")
+df$shannon_diversity <- sh$Shannon
+
+# 3) Create your Pollution factor (if you haven't already)
+df$Pollution <- factor(ifelse(df$Site %in% c("BRL","BWTP","WBS","DWTP"),
+                              "Polluted","Non-polluted"),
+                       levels = c("Non-polluted","Polluted"))
+
+# 4) Make sure your grouping vars are factors
+df$Site <- factor(df$Site)
+df$SampleID   <- factor(df$SampleID)  # if you have an ID column
+
+options(na.action = "na.fail")
+#mixed model with site as a random factor and pollution (polluted vs unpolluted) as a fixed factor
+#lm.ip1<-lmer(shannon_diversity~Pollution+Weight.mg+Clutch.Size+Right.Tarsus.mm+Wing.Chord.mm+X9th.Primary.mm+ (1|Site), REML=FALSE,na.action = "na.fail", data=df)
+#summary(lm.ip1)
+#ip1models<-dredge(lm.ip1)
+
+
+a1<-lm(shannon_diversity~Site+Weight.mg+Clutch.Size+Right.Tarsus.mm+Wing.Chord.mm+X9th.Primary.mm, na.action="na.fail", data=df)
+a1models<-dredge (a1)
+a1models
+
+#lists top models with lowest AICc
+a1models
+
+#rerun best model on its own
+best<-shannon_diversity~ #add factors
+
+#check assumptions of best model
+check_model(best)
+
+#summary
+summary(best)
+
+alt.est.a <- influence(lm.ip1, "Site")
+
+#another outlier test
+cooks.distance(alt.est.a)
+
+#confidence intervals which are the same as p values
+confint.merMod(lm.ip1)
+
+#running a linear model without a random factor
+a1<-lm(shannon_diversity~Site+Clutch.Size+Weight.mg+Right.Tarsus.mm+Wing.Chord.mm+X9th.Primary.mm, na.action="na.fail", data= df)
+a1models<-dredge (a1)
+```
+
+```{r}
+## ────────────────────────────────────────────────────────────────
+## BODY-CONDITION INDEX (BCI) – compare among sites
+## ────────────────────────────────────────────────────────────────
+
+# 1. Fit mass-on-wing regression (keeps NA rows so lengths match)
+bci_lm <- lm(Weight.mg ~ Wing.Chord.mm,
+             data      = df,
+             na.action = na.exclude)
+
+# 2. Add residuals to df and to the phyloseq sample_data
+df$BCI_resid <- resid(bci_lm)
+sample_data(dat_r)$BCI_resid <- df$BCI_resid   # synchronise
+
+# 3. Visualise BCI by Site
+library(ggplot2)
+
+ggplot(df, aes(Site, BCI_resid, fill = Site)) +
+  geom_boxplot(outlier.shape = NA, colour = "grey20") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Residual body mass (BCI) by site",
+       y      = "Body-condition index (g)", x = "Site") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+# 4. Statistical test: does BCI differ among sites?
+#    a) Welch one-way ANOVA (robust to unequal variances)
+oneway <- oneway.test(BCI_resid ~ Site, data = df)
+oneway
+
+#    b) If significant, run pairwise comparisons (Tukey on lm or Games-Howell)
+#       Create a linear model with Site as factor
+lm_site <- lm(BCI_resid ~ Site, data = df)
+#       Tukey HSD with unequal n but equal variances assumption:
+library(multcomp)
+cld(glht(lm_site, linfct = mcp(Site = "Tukey")))
+
+## ──────────────────────────────────────────────────────────────
+##  Per-site body-condition summary (median, IQR, n)
+## ──────────────────────────────────────────────────────────────
+library(dplyr)
+
+site_bci_stats <- df %>% 
+  group_by(Site) %>% 
+  summarise(
+    n           = n(),
+    median_BCI  = median(BCI_resid, na.rm = TRUE),
+    IQR_BCI     = IQR   (BCI_resid, na.rm = TRUE),
+    .groups     = "drop"
+  ) %>% 
+  arrange(median_BCI)      # optional: sort from lowest to highest
+
+```
+
+```{r}
+# ────────────────────────────────────────────────────────────────
+# Robust BCI extractor (handles snake_case & mg→g)
+# ────────────────────────────────────────────────────────────────
+library(dplyr)
+library(readr)
+
+# Ensure an ID column is present
+if (!"SampleID" %in% names(df)) {
+  df$SampleID <- df$sample_id %||% rownames(df)
+}
+
+# 1) Detect columns present in *your* df
+weight_candidates <- c(
+  # prefer grams
+  "weight_g","Weight.g","weight", "mass_g","Mass_g",
+  # fallbacks in mg
+  "weight_mg","Weight.mg"
+)
+wing_candidates <- c(
+  "wing_chord_mm","Wing.Chord.mm","wing_mm","Wing.mm",
+  # fallback “second” column names you listed
+  "wing_chord_mm_2","Wing.Chord.mm.2"
+)
+site_candidates <- c("site","Site")
+
+pick_first <- function(cands, tbl) {
+  hit <- cands[cands %in% names(tbl)]
+  if (length(hit)) hit[1] else NA_character_
+}
+
+w_col    <- pick_first(weight_candidates, df)
+wing_col <- pick_first(wing_candidates,   df)
+site_col <- pick_first(site_candidates,   df)
+
+if (is.na(w_col) || is.na(wing_col)) {
+  stop("Could not find weight (tried: ", paste(weight_candidates, collapse=", "),
+       ") or wing (tried: ", paste(wing_candidates, collapse=", "),
+       ") in df. Have: ", paste(names(df), collapse=", "))
+}
+
+# 2) Coerce numeric and normalize units (prefer grams; convert mg→g)
+df[[w_col]]    <- suppressWarnings(as.numeric(df[[w_col]]))
+df[[wing_col]] <- suppressWarnings(as.numeric(df[[wing_col]]))
+
+# If we only have mg, convert to grams for the regression and output
+weight_is_mg <- grepl("mg$", w_col, ignore.case = TRUE)
+weight_vec_g <- if (weight_is_mg) df[[w_col]] / 1000 else df[[w_col]]
+
+# 3) (Re)compute BCI if needed (residuals of mass ~ wing chord)
+if (!"bci_resid" %in% names(df) || all(is.na(df$bci_resid))) {
+  bci_lm <- lm(weight_vec_g ~ df[[wing_col]], na.action = na.exclude)
+  df$bci_resid <- resid(bci_lm)
+}
+
+# 4) Build tidy output with consistent names
+bci_tbl <- tibble(
+  SampleID      = df$SampleID,
+  Site          = if (!is.na(site_col)) df[[site_col]] else NA,
+  Weight_g      = weight_vec_g,
+  WingChord_mm  = df[[wing_col]],
+  BCI_resid     = df$bci_resid
+)
+
+# 5) Save & preview
+write_csv(bci_tbl, ##BCI CSV)
+
+```        
+
+```{r}
+## ────────────────────────────────────────────────────────────────
+##  Site-by-site BCI summary + pairwise Welch t-tests (BH adj)
+## ────────────────────────────────────────────────────────────────
+library(dplyr)      # summarise(), pipes
+library(multcomp)   # cld() for letters
+library(rstatix)    # tidy pairwise_t_test()
+
+# 0. Ensure residual BCI column exists ---------------------------
+if (!"BCI_resid" %in% names(df)) {
+  bci_lm       <- lm(Weight.mg ~ Wing.Chord.mm, data = df,
+                     na.action = na.exclude)   # keep NA rows
+  df$BCI_resid <- resid(bci_lm)
+}
+
+# 1. Descriptive stats ------------------------------------------
+site_stats <- df %>% 
+  group_by(Site) %>% 
+  summarise(
+    n        = n(),
+    mean_BCI = mean(BCI_resid, na.rm = TRUE),
+    sd_BCI   = sd(BCI_resid,   na.rm = TRUE),
+    se_BCI   = sd_BCI / sqrt(n),
+    .groups  = "drop"
+  )
+print(site_stats)
+
+# 2a. BH-adjusted Welch tests – tidy tibble ----------------------
+pairwise_df <- pairwise_t_test(
+  data            = df,
+  formula         = BCI_resid ~ Site,
+  p.adjust.method = "BH"          # BH correction
+)
+# View just the adjusted p values
+pairwise_df %>% select(group1, group2, p.adj) %>% arrange(p.adj)
+
+# 2b. Same thing as a symmetric matrix (base-R) ------------------
+pair_mat <- pairwise.t.test(
+  x               = df$BCI_resid,
+  g               = df$Site,
+  p.adjust.method = "BH",
+  pool.sd         = FALSE          # Welch unequal-var
+)
+pair_mat$p.value           # prints the matrix
+
+# 3. Compact letters display for plotting captions --------------
+lm_site <- lm(BCI_resid ~ Site, data = df)
+tukey   <- glht(lm_site, linfct = mcp(Site = "Tukey"))
+letters <- cld(tukey)$mcletters$Letters
+print(letters)
+
+```
+
+```{r}
+# ── Setup ───────────────────────────────────────────────────────────────────────
+library(dplyr)
+library(ggplot2)
+library(janitor)
+library(lme4)
+
+# If your metadata is in the phyloseq object, start from there:
+df <- data.frame(sample_data(dat_r)) |> as_tibble()
+
+# Clean names like "Weight (g)" -> weight_g
+df <- clean_names(df)
+
+# Helper to pick a single column by candidate patterns
+pick_col <- function(data, patterns, desc){
+  idx <- Reduce(`|`, lapply(patterns, function(p) grepl(p, names(data), ignore.case = TRUE)))
+  hits <- names(data)[idx]
+  if (length(hits) == 0) stop(sprintf("Couldn't find a column for %s. Checked patterns: %s",
+                                      desc, paste(patterns, collapse=", ")), call. = FALSE)
+  if (length(hits) > 1) {
+    # If multiple, prefer exact/common names if present
+    preferred <- c("weight_g","weight","mass_g","body_mass_g","wing_chord_mm","wing_chord","wing_mm")
+    hit <- intersect(preferred, hits)
+    if (length(hit) >= 1) return(hit[1])
+    warning(sprintf("Multiple candidates for %s found: %s. Using %s.",
+                    desc, paste(hits, collapse=", "), hits[1]))
+    return(hits[1])
+  }
+  hits[1]
+}
+
+# Try to find weight (g) and wing chord (mm)
+weight_col <- pick_col(df,
+  patterns = c("^weight[_]*g$", "^weight$", "mass[_]*g", "body[_]*mass[_]*g"),
+  desc = "weight (g)"
+)
+wing_col <- pick_col(df,
+  patterns = c("^wing[_]*chord[_]*mm$", "^wing[_]*chord$", "^wing[_]*mm$"),
+  desc = "wing chord (mm)"
+)
+
+# ── Compute residual BCI (mass ~ wing chord) ────────────────────────────────────
+if (!"bci_resid" %in% names(df)) {
+  # Use grams (your data appear to be in g, not mg)
+  bci_formula <- reformulate(wing_col, response = weight_col)
+  bci_lm <- lm(bci_formula, data = df, na.action = na.exclude)
+  df$bci_resid <- resid(bci_lm)
+}
+
+# ── Define Pollution factor ─────────────────────────────────────────────────────
+polluted_sites <- c("BRL", "BWTP", "WBS", "DWTP")  # edit if needed
+
+# Ensure 'site' column exists (clean_names likely made it `site`)
+if (!"site" %in% names(df)) stop("No 'site' column found after clean_names().", call. = FALSE)
+
+df <- df |>
+  mutate(
+    Pollution = factor(ifelse(site %in% polluted_sites, "Waste", "Rural"),
+                       levels = c("Rural","Waste"))
+  )
+
+# ── Write back to phyloseq object (so ordinations etc. can use it) ─────────────
+# Align by row order (sample_data rows should match df rows if created directly from it)
+sample_data(dat_r)$Pollution <- df$Pollution
+sample_data(dat_r)$BCI_resid <- df$bci_resid
+
+# ── Plot: BCI by pollution class ────────────────────────────────────────────────
+p <- ggplot(df, aes(Pollution, bci_resid, fill = Pollution)) +
+  geom_boxplot(outlier.shape = NA, colour = "grey20") +
+  geom_jitter(width = 0.1, alpha = 0.4, size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = c("Rural" = "steelblue", "Waste" = "firebrick")) +
+  labs(title = "Residual body mass (BCI) by site condition",
+       x = NULL, y = "Body-condition index (g residuals)") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "none")
+print(p)
+
+# ── Welch two-sample t-test ────────────────────────────────────────────────────
+t_poll <- t.test(bci_resid ~ Pollution, data = df)
+print(t_poll)
+
+# Cohen's d (pooled SD)
+polluted    <- df$bci_resid[df$Pollution == "Waste"]
+nonpolluted <- df$bci_resid[df$Pollution == "Rural"]
+
+s_pool <- sqrt(((length(polluted)-1)*var(polluted) +
+                (length(nonpolluted)-1)*var(nonpolluted)) /
+               (length(polluted) + length(nonpolluted) - 2))
+
+d <- (mean(polluted, na.rm = TRUE) - mean(nonpolluted, na.rm = TRUE)) / s_pool
+cat("Cohen's d (Waste - Rural):", round(d, 3), "\n")
+
+# ── Mixed model controlling for site ───────────────────────────────────────────
+# Use site as a random intercept; ensure it's a factor
+df$site <- factor(df$site)
+bci_lmm <- lmer(bci_resid ~ Pollution + (1 | site), data = df)
+summary(bci_lmm)
+
+## ──────────────────────────────────────────────────────────────
+##  4.  Descriptives, Welch t-test, and Cohen’s d
+## ──────────────────────────────────────────────────────────────
+library(dplyr)
+library(effectsize)   # install.packages("effectsize")  if needed
+
+# 4a. Descriptive stats ----------------------------------------
+bci_summary <- df %>% 
+  group_by(Pollution) %>% 
+  summarise(
+    n        = n(),
+    mean_g   = mean(bci_resid, na.rm = TRUE),
+    sd_g     = sd  (bci_resid, na.rm = TRUE),
+    .groups  = "drop"
+  )
+
+# 4b. Welch t-test --------------------------------------------
+t_poll <- t.test(bci_resid ~ Pollution, data = df)
+
+# Print result in the standard R format
+print(t_poll)               
+```
+                            
+```{r}
+# ──────────────────────────────────────────────────────────────── ANOVA comparison of alpha diversity results
+# 0) Packages ----------------------------------------------------
+library(phyloseq)
+library(dplyr)
+library(tibble)     # rownames_to_column()
+library(rstatix)    # Games-Howell, if needed
+library(car)        # Levene’s
+
+# ────────────────────────────────────────────────────────────────
+# 1) Alpha-diversity table ---------------------------------------
+alpha_df <- estimate_richness(dat, measures = "Shannon") %>%
+  {                               # add SampleID only if it's NOT there
+    if (!"SampleID" %in% colnames(.)) {
+      rownames_to_column(., "SampleID")
+    } else .
+  }
+
+cat("\nalpha_df columns →", paste(colnames(alpha_df), collapse = ", "), "\n")
+
+# ────────────────────────────────────────────────────────────────
+# 2) Metadata table  (NEVER duplicates) --------------------------
+meta_df <- tibble(
+  SampleID = sample_names(dat),         # guaranteed unique
+  Site      = sample_data(dat)$Site
+)
+
+cat("meta_df  columns →", paste(colnames(meta_df), collapse = ", "), "\n")
+
+# ────────────────────────────────────────────────────────────────
+# 3) Merge & sanity-check ----------------------------------------
+alpha_df <- left_join(alpha_df, meta_df, by = "SampleID")
+
+# Confirm uniqueness
+stopifnot(anyDuplicated(colnames(alpha_df)) == 0)
+cat("Merged OK.  Columns are unique.\n")
+
+# ────────────────────────────────────────────────────────────────
+# 4) ANOVA + post-hocs ------------------------------------------
+anova_res  <- aov(Shannon ~ Site, data = alpha_df)
+levene_res <- leveneTest(Shannon ~ Site, data = alpha_df)
+
+if (levene_res$`Pr(>F)`[1] < 0.05) {
+  message("⚠️  Variances unequal → using Welch + Games-Howell")
+  welch_res <- oneway.test(Shannon ~ Site, data = alpha_df,
+                           var.equal = FALSE)
+  gh_res <- alpha_df %>% games_howell_test(Shannon ~ Site)
+  print(welch_res); print(gh_res)
+} else {
+  tukey_res <- TukeyHSD(anova_res)
+  print(summary(anova_res)); print(tukey_res)
+}
+```
+
+```{r}
+## Barcharts for taxonomic composition:
+### top 20 phyla
+top20 <- names(sort(taxa_sums(dat_lessHOST), decreasing=TRUE))[1:20]
+dat.top20 <- transform_sample_counts(dat, function(OTU) OTU/sum(OTU))
+dat.top20 <- prune_taxa(top20, dat.top20)
+
+## plotting:
+### quick look at plot
+plot_bar(dat.top20, fill='Genus')
+plot_bar(dat.top20, fill='Phylum')
+```
+
+```{r}
+# ─── 0) Libraries ─────────────────────────────────────────────────────────────
+library(phyloseq)
+library(DESeq2)
+library(apeglm)
+library(dplyr)
+library(tibble)
+
+# ─── 1) Pre‐filter: keep taxa in ≥10% of samples ──────────────────────────────
+minSamples <- ceiling(0.1 * nsamples(dat))         # at least this many samples
+otu_mat    <- as(otu_table(dat), "matrix")        # extract count matrix
+if (!taxa_are_rows(dat)) otu_mat <- t(otu_mat)     # ensure taxa in rows
+presence   <- rowSums(otu_mat > 0)                # count non‐zero per taxon
+keep_taxa  <- presence >= minSamples              # TRUE for taxa to keep
+dat_filt   <- prune_taxa(keep_taxa, dat)          # prune phyloseq object
+
+message(sum(keep_taxa), " taxa kept out of ", ntaxa(dat))
+
+# ─── 2) Ensure your grouping factor ─────────────────────────────────────────
+sample_data(dat_filt)$Site <- factor(sample_data(dat_filt)$Site)
+
+# ─── 3) DESeq2 object & model fit ────────────────────────────────────────────
+dds <- phyloseq_to_deseq2(dat_filt, ~ Site)
+dds <- DESeq(dds,
+             sfType  = "poscounts",    # handles zeros
+             test    = "Wald",
+             fitType = "parametric")
+
+# ─── 4) Examine available contrasts ──────────────────────────────────────────
+resultsNames(dds)
+# e.g. "Intercept", "Site_BWTP_vs_BRL", "Site_DWTP_vs_BRL", …
+
+# ─── 5) Shrink log₂‐fold‐changes with apeglm ─────────────────────────────────
+resLFC <- lfcShrink(dds,
+                    coef = "Site_DWTP_vs_BRL",
+                    type = "apeglm")
+
+# ─── 6) Extract significant ASVs ────────────────────────────────────────────
+sigASVs <- as.data.frame(resLFC) %>%
+  rownames_to_column(var = "ASV") %>%
+  filter(padj < 0.05) %>%
+  arrange(padj)
+
+head(sigASVs)
+
+```
+
+```{r}
+library(phyloseq)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+# 0) Pick your reference site and phyla of interest
+ref_site <- "DWTP"
+phyla_of_interest <- c("Chlamydiota", "Bacillota", "Actinomycetota", "Bacteroidota", "Pseudomonadota")  # <- Add your phyla here!
+
+# 1) Agglomerate to Phylum
+ps_phylum <- tax_glom(dat, taxrank = "Phylum")
+
+# 2) Melt and compute per-sample totals
+df_all <- psmelt(ps_phylum) %>%
+  group_by(Sample) %>%
+  mutate(sample_total = sum(Abundance)) %>% 
+  ungroup()
+
+# 3) Initialize lists to store results
+plots  <- list()
+ttests <- list()
+
+# 4) Loop through each phylum
+for (ref_phylum in phyla_of_interest) {
+  
+  # Subset for the current phylum
+  df <- df_all %>%
+    filter(Phylum == ref_phylum) %>%
+    group_by(Site, Sample) %>%
+    summarise(
+      relAbund = sum(Abundance) / unique(sample_total),
+      .groups  = "drop"
+    )
+  
+  # Compute site means and SEM (as %)
+  site_stats <- df %>%
+    group_by(Site) %>%
+    summarise(
+      meanRA = mean(relAbund) * 100,
+      semRA  = sd(relAbund) / sqrt(n()) * 100,
+      .groups = "drop"
+    )
+  
+  # Compute differences vs reference site
+  ref_mean <- site_stats %>% filter(Site == ref_site) %>% pull(meanRA)
+  
+  site_stats <- site_stats %>%
+    mutate(
+      diff    = meanRA - ref_mean,
+      pctDiff = round(diff / ref_mean * 100, 1)
+    )
+  
+  # Make plot
+  p <- ggplot(site_stats, aes(x = Site, y = diff)) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_pointrange(aes(ymin = diff - semRA,
+                        ymax = diff + semRA),
+                    size = 0.8) +
+    geom_text_repel(aes(label = paste0(ifelse(pctDiff > 0, "+", ""),
+                                       pctDiff, "%"),
+                         y = diff),
+                    nudge_y = ifelse(site_stats$diff > 0, 2, -2),
+                    size = 4,
+                    segment.size = 0.3) +
+    coord_flip() +
+    labs(
+      title = paste0("Difference in mean ", ref_phylum,
+                     " rel. abundance vs ", ref_site, " (± SEM)"),
+      x = NULL,
+      y = "Difference in mean rel. abundance (%)"
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor   = element_blank()
+    )
+  
+  # Save plot
+  plots[[ref_phylum]] <- p
+  
+  # Save t-test results with Phylum name attached
+  ttests[[ref_phylum]] <- list(
+    phylum = ref_phylum,
+    result = pairwise.t.test(df$relAbund, df$Site,
+                             p.adjust.method = "BH",
+                             pool.sd = FALSE)
+  )
+}
+
+
+# 6) Look at t-test results (example)
+ttests[["Chlamydiota"]]   # Shows the actual pairwise t-test table
+ttests[["Bacillota"]]    # Bacillota pairwise test
+ttests[["Actinomycetota"]]    # Bacillota pairwise test
+ttests[["Pseudomonadota"]]    # Bacillota pairwise test
+ttests[["Bacteroidota"]]    # Bacillota pairwise test
+```
+
+```{r}
+## ────────────────────────────────────────────────────────────────
+## BLOCK 1 — DATA PREP
+## Inputs expected in environment:
+##   dat: phyloseq object with counts + taxonomy (has Phylum)
+##   ref_site: character (e.g., "DWTP")
+##   phyla_of_interest: character vector of phyla to evaluate
+## ────────────────────────────────────────────────────────────────
+
+suppressPackageStartupMessages({
+  library(phyloseq)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(ggrepel)
+  library(rstatix)   # shapiro_test, levene_test, kruskal_test, dunn_test
+})
+
+# Option: drop sites that are 100% zeros for a given phylum (no information)
+drop_all_zero_sites <- TRUE
+label_nudge <- 2  # for % labels on the plot
+
+# 1) Agglomerate to Phylum
+ps_phylum <- tax_glom(dat, taxrank = "Phylum")
+
+# 2) Long data + per-sample totals
+df_all <- psmelt(ps_phylum) %>%
+  group_by(Sample) %>%
+  mutate(sample_total = sum(Abundance)) %>%
+  ungroup()
+
+# 3) Initialize containers used by Block 2
+plots     <- list()  # per-phylum ggplot objects (in-memory only)
+tests     <- list()  # per-phylum stats results
+summaries <- list()  # tidy-ish posthoc tables per phylum (in-memory only)
+
+```
+
+```{r}
+## ────────────────────────────────────────────────────────────────
+## BLOCK 2 — RUN TESTS
+## For each phylum: per-sample relative abundance ~ Site
+## Primary: one-way ANOVA + TukeyHSD (no Welch)
+## Fallback: Kruskal–Wallis + Dunn (BH) when assumptions fail
+## ────────────────────────────────────────────────────────────────
+
+for (ref_phylum in phyla_of_interest) {
+
+  # Per-sample relative abundance for this phylum
+  df <- df_all %>%
+    filter(Phylum == ref_phylum) %>%
+    group_by(Site, Sample) %>%
+    summarise(relAbund = sum(Abundance) / unique(sample_total),
+              .groups = "drop")
+
+  # Optionally remove sites with all-zero relAbund for this phylum
+  if (drop_all_zero_sites) {
+    site_nonzero <- df %>%
+      group_by(Site) %>%
+      summarise(all_zero = all(relAbund == 0), .groups = "drop") %>%
+      filter(!all_zero) %>%
+      pull(Site)
+    df <- df %>% filter(Site %in% site_nonzero)
+  }
+
+# Ensure Site is a factor (prevents "group coerced to factor" warnings)
+# Put ref_site first in the order (nice for tables/plots), then the rest alphabetically
+site_levels <- c(ref_site, sort(unique(df$Site[df$Site != ref_site])))
+df <- df %>% mutate(Site = factor(Site, levels = site_levels))
+
+  
+  # Guard: need ≥2 sites and reasonable sample size
+  if (dplyr::n_distinct(df$Site) < 2 || nrow(df) < 3) {
+    warning(paste0("Skipping ", ref_phylum, ": not enough data across sites."))
+    next
+  }
+
+  # Site means/SEMs for difference-vs-reference plot
+  site_stats <- df %>%
+    group_by(Site) %>%
+    summarise(
+      meanRA = mean(relAbund) * 100,
+      semRA  = sd(relAbund) / sqrt(n()) * 100,
+      n      = n(),
+      .groups = "drop"
+    )
+
+  # Reference must exist after any filtering
+  if (!ref_site %in% site_stats$Site) {
+    warning(paste0("Reference site '", ref_site, "' not present for ", ref_phylum))
+    next
+  }
+
+  ref_mean <- site_stats %>% filter(Site == ref_site) %>% pull(meanRA)
+  site_stats <- site_stats %>%
+    mutate(
+      diff    = meanRA - ref_mean,
+      pctDiff = round(ifelse(ref_mean == 0, NA_real_, diff / ref_mean * 100), 1)
+    )
+
+  # ── Assumptions: robust checks ────────────────────────────────
+  by_site <- df %>%
+    group_by(Site) %>%
+    summarise(n = n(),
+              sd_rel = sd(relAbund),
+              .groups = "drop")
+
+  # If any site has n<3 or sd==0 (constant values), force nonparametric
+  force_nonparam <- any(by_site$n < 3 | by_site$sd_rel == 0, na.rm = TRUE)
+
+  # Safe Shapiro per site (only when n>=3 & sd>0)
+  shapiro_by_site <- df %>%
+    group_by(Site) %>%
+    summarise(
+      shapiro_p = if (n() >= 3 && sd(relAbund) > 0) {
+        stats::shapiro.test(relAbund)$p.value
+      } else {
+        NA_real_
+      },
+      .groups = "drop"
+    )
+
+  # Levene (guard errors)
+  lev_p <- tryCatch(
+    rstatix::levene_test(df, relAbund ~ Site)$p,
+    error = function(e) NA_real_
+  )
+
+  normal_ok <- !force_nonparam && all(shapiro_by_site$shapiro_p > 0.05, na.rm = TRUE)
+  homo_ok   <- !is.na(lev_p) && lev_p > 0.05
+
+  # ── Tests: ANOVA + Tukey (primary) OR KW + Dunn (fallback) ────
+  if (normal_ok && homo_ok) {
+    aov_model <- aov(relAbund ~ Site, data = df)
+    aov_sum   <- summary(aov_model)
+    tuk       <- TukeyHSD(aov_model)
+
+    tests[[ref_phylum]] <- list(
+      phylum      = ref_phylum,
+      method      = "ANOVA + TukeyHSD",
+      assumptions = list(by_site = by_site, shapiro = shapiro_by_site, levene_p = lev_p),
+      anova       = aov_sum,
+      posthoc     = tuk
+    )
+
+    tuk_df <- as.data.frame(tuk$Site)
+    tuk_df$comparison <- rownames(tuk_df)
+    summaries[[ref_phylum]] <- tuk_df %>%
+      dplyr::select(comparison, diff = diff, lwr = lwr, upr = upr, p_adj = `p adj`) %>%
+      dplyr::mutate(phylum = ref_phylum, method = "TukeyHSD")
+
+  } else {
+    kw   <- rstatix::kruskal_test(df, relAbund ~ Site)
+    dunn <- rstatix::dunn_test(df, relAbund ~ Site, p.adjust.method = "BH")
+
+    tests[[ref_phylum]] <- list(
+      phylum      = ref_phylum,
+      method      = "Kruskal–Wallis + Dunn (BH)",
+      assumptions = list(by_site = by_site, shapiro = shapiro_by_site, levene_p = lev_p),
+      kruskal     = kw,
+      posthoc     = dunn
+    )
+
+    summaries[[ref_phylum]] <- dunn %>%
+      dplyr::select(group1, group2, p.adj) %>%
+      dplyr::rename(comparison_paired_groups = group1,
+                    comparison_against       = group2,
+                    p_adj                    = p.adj) %>%
+      dplyr::mutate(phylum = ref_phylum, method = "Dunn (BH)")
+  }
+
+  # ── Optional in-memory plot: difference vs reference (±SEM) ───
+  plots[[ref_phylum]] <- ggplot(site_stats, aes(x = Site, y = diff)) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_pointrange(aes(ymin = diff - semRA, ymax = diff + semRA), size = 0.8) +
+    geom_text_repel(
+      aes(label = ifelse(is.na(pctDiff), "NA", paste0(ifelse(pctDiff > 0, "+", ""), pctDiff, "%")),
+          y = diff),
+      nudge_y = ifelse(site_stats$diff > 0, label_nudge, -label_nudge),
+      size = 4, segment.size = 0.3
+    ) +
+    coord_flip() +
+    labs(
+      title = paste0("Difference in mean ", ref_phylum,
+                     " relative abundance vs ", ref_site, " (± SEM)"),
+      x = NULL,
+      y = "Difference in mean relative abundance (%)"
+    ) +
+    theme_bw(base_size = 14) +
+    theme(panel.grid.major.y = element_blank(),
+          panel.grid.minor   = element_blank())
+}                                     
+```   
+
+```{r}
+## ===== Pairwise p-value tables (readable) =====
+library(dplyr)
+library(stringr)
+
+# star helper
+.star <- function(p) ifelse(is.na(p), "", ifelse(p<0.001,"***",ifelse(p<0.01,"**",ifelse(p<0.05,"*",""))))
+
+# Build one tidy table of pairwise adjusted p-values for all phyla
+pairwise_pvals <- bind_rows(lapply(names(tests), function(ph) {
+  x <- tests[[ph]]
+  if (is.null(x$posthoc)) return(NULL)
+
+  if (identical(x$method, "ANOVA + TukeyHSD")) {
+    tk <- as.data.frame(x$posthoc$Site)
+    tk$comparison <- rownames(tk)
+    tk %>%
+      transmute(
+        phylum     = ph,
+        method     = "TukeyHSD",
+        comparison = comparison,                # "A-B"
+        p_adj      = `p adj`,
+        sig        = .star(p_adj)
+      )
+  } else { # Kruskal–Wallis + Dunn (BH)
+    dn <- x$posthoc
+    dn %>%
+      transmute(
+        phylum     = ph,
+        method     = "Dunn (BH)",
+        comparison = paste0(group1, " - ", group2),
+        p_adj      = p.adj,
+        sig        = .star(p_adj)
+      )
+  }
+}), .id = NULL) %>%
+  arrange(phylum, p_adj) %>%
+  mutate(p_adj = signif(p_adj, 3))  # nicer rounding
+
+# ==== Quick prints ====
+# All phyla, all pairs:
+pairwise_pvals
+
+pairwise_pvals %>% filter(p_adj < 0.05)
+```                          
+
+```{r}
+
+library(phyloseq)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+# Genus names of interest (from screenshot, cleaned)
+genera_of_interest <- c(
+  "Apilactobacillus",
+  "Brevundimonas",
+  "Candidatus Rhabdochlamydia",
+  "Catellicoccus",
+  "Commensalibacter",
+  "Dysgonomonas",
+  "Enterococcus",
+  "Fructobacillus",
+  "Klebsiella",
+  "Leuconostoc",
+  "Morganella",
+  "Paenibacillus",
+  "Providencia",
+  "Rickettsiella",
+  "Serratia",
+  "Stenotrophomonas",
+  "Weissella"
+)
+
+# Reference site
+ref_site <- "DWTP"
+
+# 1) Agglomerate at Genus level
+ps_genus <- tax_glom(dat, taxrank = "Genus")
+
+# 2) Melt and compute per-sample totals
+df_all <- psmelt(ps_genus) %>%
+  group_by(Sample) %>%
+  mutate(sample_total = sum(Abundance)) %>% 
+  ungroup()
+
+# 3) Initialize output containers
+plots  <- list()
+ttests <- list()
+
+# 4) Loop through each genus
+for (ref_genus in genera_of_interest) {
+  
+  # Subset to current genus
+  df <- df_all %>%
+    filter(Genus == ref_genus) %>%
+    group_by(Site, Sample) %>%
+    summarise(
+      relAbund = sum(Abundance) / unique(sample_total),
+      .groups  = "drop"
+    )
+  
+  # Compute site means and SEM
+  site_stats <- df %>%
+    group_by(Site) %>%
+    summarise(
+      meanRA = mean(relAbund) * 100,
+      semRA  = sd(relAbund) / sqrt(n()) * 100,
+      .groups = "drop"
+    )
+  
+  # Reference site mean
+  ref_mean <- site_stats %>% filter(Site == ref_site) %>% pull(meanRA)
+  
+  # Add diffs
+  site_stats <- site_stats %>%
+    mutate(
+      diff    = meanRA - ref_mean,
+      pctDiff = round(diff / ref_mean * 100, 1)
+    )
+  
+  # Plot
+  p <- ggplot(site_stats, aes(x = Site, y = diff)) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_pointrange(aes(ymin = diff - semRA,
+                        ymax = diff + semRA),
+                    size = 0.8) +
+    geom_text_repel(aes(label = paste0(ifelse(pctDiff > 0, "+", ""),
+                                       pctDiff, "%"),
+                         y = diff),
+                    nudge_y = ifelse(site_stats$diff > 0, 2, -2),
+                    size = 4,
+                    segment.size = 0.3) +
+    coord_flip() +
+    labs(
+      title = paste0("Difference in mean ", ref_genus,
+                     " rel. abundance vs ", ref_site, " (± SEM)"),
+      x = NULL,
+      y = "Difference in mean rel. abundance (%)"
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor   = element_blank()
+    )
+  
+  # Save outputs
+  plots[[ref_genus]] <- p
+  ttests[[ref_genus]] <- list(
+    genus  = ref_genus,
+    result = pairwise.t.test(df$relAbund, df$Site,
+                             p.adjust.method = "BH",
+                             pool.sd = FALSE)
+  )
+}
+
+
+# 6) Look at t-test results (example)
+ttests[["Apilactobacillus"]]
+ttests[["Brevundimonas"]]
+ttests[["Candidatus Rhabdochlamydia"]]
+ttests[["Catellicoccus"]]
+ttests[["Commensalibacter"]]
+ttests[["Dysgonomonas"]]
+ttests[["Enterococcus"]]
+ttests[["Fructobacillus"]]
+ttests[["Klebsiella"]]
+ttests[["Leuconostoc"]]
+ttests[["Morganella"]]
+ttests[["Paenibacillus"]]
+ttests[["Providencia"]]
+ttests[["Rickettsiella"]]
+ttests[["Serratia"]]
+ttests[["Stenotrophomonas"]]
+ttests[["Weissella"]]
+```
+
+```{r}
+## ────────────────────────────────────────────────────────────────
+## BLOCK 1 — DATA PREP (GENUS LEVEL)
+## Inputs expected in environment:
+##   dat: phyloseq object with counts + taxonomy (has Genus)
+##   ref_site: character (e.g., "DWTP")
+##   genera_of_interest: character vector of genera to evaluate
+## ────────────────────────────────────────────────────────────────
+
+suppressPackageStartupMessages({
+  library(phyloseq)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(ggrepel)
+  library(rstatix)
+})
+
+# Option: drop sites that are 100% zeros for a given genus
+drop_all_zero_sites <- TRUE
+label_nudge <- 2  # offset for % labels on plots
+
+# 1) Agglomerate to Genus
+ps_genus <- tax_glom(dat, taxrank = "Genus")
+
+# 2) Long data + per-sample totals
+df_all_genus <- psmelt(ps_genus) %>%
+  group_by(Sample) %>%
+  mutate(sample_total = sum(Abundance)) %>%
+  ungroup()
+
+# 3) Initialize containers for Block 2
+plots_genus     <- list()  # per-genus ggplot objects
+tests_genus     <- list()  # per-genus stats results
+summaries_genus <- list()  # tidy-ish posthoc tables per genus
+```
+                                     
+```{r}
+## ────────────────────────────────────────────────────────────────
+## BLOCK 2 — RUN TESTS (GENUS LEVEL)
+## For each genus: per-sample relative abundance ~ Site
+## Primary: one-way ANOVA + TukeyHSD
+## Fallback: Kruskal–Wallis + Dunn (BH)
+## ────────────────────────────────────────────────────────────────
+
+for (ref_genus in genera_of_interest) {
+
+  # Per-sample relative abundance
+  df <- df_all_genus %>%
+    dplyr::filter(Genus == ref_genus) %>%
+    dplyr::group_by(Site, Sample) %>%
+    dplyr::summarise(relAbund = sum(Abundance) / unique(sample_total),
+                     .groups = "drop")
+
+  # Optionally drop sites with all-zero relAbund
+  if (drop_all_zero_sites) {
+    site_nonzero <- df %>%
+      dplyr::group_by(Site) %>%
+      dplyr::summarise(all_zero = all(relAbund == 0), .groups = "drop") %>%
+      dplyr::filter(!all_zero) %>%
+      dplyr::pull(Site)
+    df <- df %>% dplyr::filter(Site %in% site_nonzero)
+  }
+
+  # Guard: need ≥2 sites
+  if (dplyr::n_distinct(df$Site) < 2 || nrow(df) < 3) {
+    next
+  }
+
+  # Ensure Site is a factor
+  site_levels <- c(ref_site, sort(unique(df$Site[df$Site != ref_site])))
+  df <- df %>% dplyr::mutate(Site = factor(Site, levels = site_levels))
+
+  # Track whether reference site is present
+  can_plot_vs_ref <- ref_site %in% df$Site
+
+  # ── Assumptions ──
+  by_site <- df %>%
+    dplyr::group_by(Site) %>%
+    dplyr::summarise(n = dplyr::n(), sd_rel = sd(relAbund), .groups = "drop")
+
+  force_nonparam <- any(by_site$n < 3 | by_site$sd_rel == 0, na.rm = TRUE)
+
+  shapiro_by_site <- df %>%
+    dplyr::group_by(Site) %>%
+    dplyr::summarise(
+      shapiro_p = if (n() >= 3 && sd(relAbund) > 0) {
+        stats::shapiro.test(relAbund)$p.value
+      } else {
+        NA_real_
+      },
+      .groups = "drop"
+    )
+
+  lev_p <- tryCatch(
+    rstatix::levene_test(df, relAbund ~ Site)$p,
+    error = function(e) NA_real_
+  )
+
+  normal_ok <- !force_nonparam && all(shapiro_by_site$shapiro_p > 0.05, na.rm = TRUE)
+  homo_ok   <- !is.na(lev_p) && lev_p > 0.05
+
+  # ── Tests ──
+  if (normal_ok && homo_ok) {
+    aov_model <- aov(relAbund ~ Site, data = df)
+    aov_sum   <- summary(aov_model)
+    tuk       <- TukeyHSD(aov_model)
+
+    tests_genus[[ref_genus]] <- list(
+      genus       = ref_genus,
+      method      = "ANOVA + TukeyHSD",
+      assumptions = list(by_site = by_site, shapiro = shapiro_by_site, levene_p = lev_p),
+      anova       = aov_sum,
+      posthoc     = tuk
+    )
+
+    tk_df <- as.data.frame(tuk$Site)
+    tk_df$comparison <- rownames(tk_df)
+    summaries_genus[[ref_genus]] <- tk_df %>%
+      dplyr::select(comparison, diff = diff, lwr = lwr, upr = upr, p_adj = `p adj`) %>%
+      dplyr::mutate(genus = ref_genus, method = "TukeyHSD")
+
+  } else {
+    kw   <- rstatix::kruskal_test(df, relAbund ~ Site)
+    dunn <- rstatix::dunn_test(df, relAbund ~ Site, p.adjust.method = "BH")
+
+    tests_genus[[ref_genus]] <- list(
+      genus       = ref_genus,
+      method      = "Kruskal–Wallis + Dunn (BH)",
+      assumptions = list(by_site = by_site, shapiro = shapiro_by_site, levene_p = lev_p),
+      kruskal     = kw,
+      posthoc     = dunn
+    )
+
+    summaries_genus[[ref_genus]] <- dunn %>%
+      dplyr::select(group1, group2, p.adj) %>%
+      dplyr::rename(comparison_paired_groups = group1,
+                    comparison_against       = group2,
+                    p_adj                    = p.adj) %>%
+      dplyr::mutate(genus = ref_genus, method = "Dunn (BH)")
+  }
+
+  # ── Plot (only if reference site present) ──
+  if (can_plot_vs_ref) {
+    site_stats <- df %>%
+      dplyr::group_by(Site) %>%
+      dplyr::summarise(
+        meanRA = mean(relAbund) * 100,
+        semRA  = sd(relAbund) / sqrt(dplyr::n()) * 100,
+        n      = dplyr::n(),
+        .groups = "drop"
+      )
+
+    ref_mean <- site_stats %>% dplyr::filter(Site == ref_site) %>% dplyr::pull(meanRA)
+    site_stats <- site_stats %>%
+      dplyr::mutate(
+        diff    = meanRA - ref_mean,
+        pctDiff = round(ifelse(ref_mean == 0, NA_real_, diff / ref_mean * 100), 1)
+      )
+
+    plots_genus[[ref_genus]] <- ggplot(site_stats, aes(x = Site, y = diff)) +
+      geom_hline(yintercept = 0, linetype = "dashed") +
+      geom_pointrange(aes(ymin = diff - semRA, ymax = diff + semRA), size = 0.8) +
+      geom_text_repel(
+        aes(label = ifelse(is.na(pctDiff), "NA", paste0(ifelse(pctDiff > 0, "+", ""), pctDiff, "%")),
+            y = diff),
+        nudge_y = ifelse(site_stats$diff > 0, label_nudge, -label_nudge),
+        size = 4, segment.size = 0.3
+      ) +
+      coord_flip() +
+      labs(
+        title = paste0("Difference in mean ", ref_genus,
+                       " relative abundance vs ", ref_site, " (± SEM)"),
+        x = NULL,
+        y = "Difference in mean relative abundance (%)"
+      ) +
+      theme_bw(base_size = 14) +
+      theme(panel.grid.major.y = element_blank(),
+            panel.grid.minor   = element_blank())
+  } else {
+    plots_genus[[ref_genus]] <- NULL
+  }
+}
+```    
+
+```{r}
+## ────────────────────────────────────────────────────────────────
+## BLOCK 3 — GENERA PAIRWISE P-VALUES
+## Produces a tidy table of adjusted p-values (with stars)
+## Also gives a filtered table of significant results only
+## ────────────────────────────────────────────────────────────────
+
+.star <- function(p) ifelse(is.na(p), "",
+                      ifelse(p < 0.001, "***",
+                      ifelse(p < 0.01,  "**",
+                      ifelse(p < 0.05,  "*", ""))))
+
+pairwise_pvals_genus <- bind_rows(lapply(names(tests_genus), function(gn) {
+  x <- tests_genus[[gn]]
+  if (is.null(x$posthoc)) return(NULL)
+
+  if (identical(x$method, "ANOVA + TukeyHSD")) {
+    tk <- as.data.frame(x$posthoc$Site)
+    tk$comparison <- rownames(tk)
+    tk %>%
+      transmute(
+        genus      = gn,
+        method     = "TukeyHSD",
+        comparison = comparison,
+        p_adj      = `p adj`,
+        sig        = .star(p_adj)
+      )
+  } else {
+    dn <- x$posthoc
+    dn %>%
+      transmute(
+        genus      = gn,
+        method     = "Dunn (BH)",
+        comparison = paste0(group1, " - ", group2),
+        p_adj      = p.adj,
+        sig        = .star(p.adj)
+      )
+  }
+}), .id = NULL) %>%
+  arrange(genus, p_adj) %>%
+  mutate(p_adj = signif(p_adj, 3))
+
+## === Significant only (p < 0.05) ===
+sig_pairwise_genus <- pairwise_pvals_genus %>%
+  filter(!is.na(p_adj) & p_adj < 0.05)
+
+## === Usage examples ===
+# View all results
+pairwise_pvals_genus
+
+# View only significant pairs
+sig_pairwise_genus
+```
+
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+
+# Extract the data as a data frame from your phyloseq object
+ps_df <- psmelt(dat.top20)
+
+table(ps_df$Phylum_new)
+ps_df_full <- psmelt(dat)  # using the full dataset rather than dat.top20
+
+
+# Recode the "Phylum" variable into a new variable "Phylum_new" based on your rules:
+ps_df_full <- ps_df_full %>%
+  mutate(Phylum_new = case_when(
+    # Big 4 with additional names in parentheses:
+    Phylum %in% "Actinomycetota"  ~ "Actinomycetota (Actinobacteria)",
+    Phylum %in% "Bacillota"       ~ "Bacillota (Firmicutes)",
+    Phylum %in% "Bacteroidota"    ~ "Bacteroidota (Bacteroidetes)",
+    Phylum %in% "Pseudomonadota"  ~ "Pseudomonadota (Proteobacteria)",
+    # Also keep Chlamydiota as its own group:
+    Phylum %in% "Chlamydiota"     ~ "Chlamydiota",
+    # Replace NA or "NA" with "Unidentifiable"
+    is.na(Phylum) | Phylum == "NA" ~ "Unidentifiable",
+    # All others fall into "Other"
+    TRUE                         ~ "Other"
+  ))
+
+# Now create the plot. We use position = "fill" so the y-axis scales from 0 to 1.
+tax_plot7 <- ggplot(ps_df_full, aes(x = Sample, y = Abundance, fill = Phylum_new)) +
+  geom_bar(stat = "identity", position = "fill") +
+  facet_wrap(~Site, scales = "free_x") +
+  scale_fill_manual(values = colours.un) +
+  labs(title = "Top Phyla", 
+       y = "Relative Abundance",
+       fill = "Phylum") +
+  guides(fill = guide_legend(nrow = 30)) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x   = element_text(angle = 270, hjust = 0, vjust = 0.5, size = 8),
+    legend.position = "right",
+    legend.key.size = unit(0.3, "cm")
+  )
+
+# Print the plot
+print(tax_plot7)
+```
+
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(ggtext)   # <- added
+
+# Extract the data as a data frame from your phyloseq object
+ps_df <- psmelt(dat.top20)
+
+table(ps_df$Genus_new)
+ps_df_full <- psmelt(dat)  # using the full dataset rather than dat.top20
+
+# Recode the "Genus" variable into a new variable "Genus_new" based on your rules:
+ps_df_full <- ps_df_full %>%
+  mutate(
+    Genus_new = case_when(
+      Genus %in% "Apilactobacillus"  ~ "Apilactobacillus (Firmicutes)",
+      Genus %in% "Catellicoccus"     ~ "Catellicoccus (Firmicutes)",
+      Genus %in% "Enterococcus"      ~ "Enterococcus (Firmicutes)",
+      Genus %in% "Fructobacillus"    ~ "Fructobacillus (Firmicutes)",
+      Genus %in% "Leuconostoc"       ~ "Leuconostoc (Firmicutes)",
+      Genus %in% "Paenibacillus"     ~ "Paenibacillus (Firmicutes)",
+      Genus %in% "Weissella"         ~ "Weissella (Firmicutes)",
+      Genus %in% "Dysgonomonas"      ~ "Dysgonomonas (Bacteroidetes)",
+      Genus %in% "Brevundimonas"     ~ "Brevundimonas (Proteobacteria)",
+      Genus %in% "Klebsiella"        ~ "Klebsiella (Proteobacteria)",
+      Genus %in% "Commensalibacter"  ~ "Commensalibacter (Proteobacteria)",
+      Genus %in% "Morganella"        ~ "Morganella (Proteobacteria)",
+      Genus %in% "Providencia"       ~ "Providencia (Proteobacteria)",
+      Genus %in% "Rickettsiella"     ~ "Rickettsiella (Proteobacteria)",
+      Genus %in% "Serratia"          ~ "Serratia (Proteobacteria)",
+      Genus %in% "Stenotrophomonas"  ~ "Stenotrophomonas (Proteobacteria)",
+      Genus %in% "Candidatus Rhabdochlamydia" ~ "Candidatus Rhabdochlamydia",
+      is.na(Genus) | Genus == "NA"   ~ "Unidentifiable",
+      TRUE                           ~ "Other"
+    )
+  ) %>%
+  # talicize ONLY the genus portion before the first space/parenthesis
+  mutate(
+    Genus_new = ifelse(
+      Genus_new %in% c("Other", "Unidentifiable"),
+      Genus_new,
+      sub("^([^ ]+)", "<i>\\1</i>", Genus_new)  # italicize first word only
+    )
+  )
+
+# Plot
+tax_plot7 <- ggplot(ps_df_full, aes(x = Sample, y = Abundance, fill = Genus_new)) +
+  geom_bar(stat = "identity", position = "fill") +
+  facet_wrap(~Site, scales = "free_x") +
+  scale_fill_manual(values = colorRampPalette(colours.un)(length(unique(ps_df_full$Genus_new)))) +
+  labs(title = "Top Genus", 
+       y = "Relative Abundance",
+       fill = "Genus") +
+  guides(fill = guide_legend(nrow = 30)) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x   = element_text(angle = 270, hjust = 0, vjust = 0.5, size = 8),
+    legend.position = "right",
+    legend.key.size = unit(0.3, "cm"),
+    legend.text = element_markdown()  # <- enables italics in legend
+  )
+
+# Print the plot
+print(tax_plot7)
+```
+
+```{r}
+##Abundance by phyla metadata
+
+library(dplyr)
+library(tidyr)
+
+# Extract numeric values from Sample and order them correctly
+percentages <- percentages %>%
+  mutate(Sample_num = as.numeric(gsub("EC", "", Sample))) %>%
+  arrange(Sample_num) %>%
+  select(-Sample_num)  # Remove temporary numeric column
+
+# Convert Sample to a factor in correct order
+percentages$Sample <- factor(percentages$Sample, levels = unique(percentages$Sample))
+
+# Summarize and reshape data
+df_wide <- percentages %>%
+  group_by(Sample, Phylum) %>% 
+  summarise(Abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = Phylum, values_from = Abundance, values_fill = 0)
+
+# View the transformed data
+print(df_wide)
+
+# Save to CSV if needed
+write.csv(df_wide, ##(Phyla abundance CSV), row.names = FALSE)
+
+```
+
+```{r}
+##Abundance by genus metadata
+
+library(dplyr)
+library(tidyr)
+
+# Extract numeric values from Sample and order them correctly
+percentages <- percentages %>%
+  mutate(Sample_num = as.numeric(gsub("EC", "", Sample))) %>%
+  arrange(Sample_num) %>%
+  select(-Sample_num)  # Remove temporary numeric column
+
+# Convert Sample to a factor in correct order
+percentages$Sample <- factor(percentages$Sample, levels = unique(percentages$Sample))
+
+# Summarize and reshape data
+df_wide <- percentages %>%
+  group_by(Sample, Genus) %>% 
+  summarise(Abundance = sum(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = Genus, values_from = Abundance, values_fill = 0)
+
+# View the transformed data
+print(df_wide)
+
+# Save to CSV if needed
+write.csv(df_wide, ##(Genus abundance CSV), row.names = FALSE)
+```                                     
